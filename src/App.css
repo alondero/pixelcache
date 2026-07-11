@@ -23,6 +23,7 @@
   flex-direction: column;
   align-items: center;
   gap: 1rem;
+  width: min(100%, 960px);
   padding: 3rem 3.5rem;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.06);
@@ -31,6 +32,67 @@
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   text-align: center;
+}
+
+.game-grid {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(var(--card-min-width, 160px), 1fr)
+  );
+  gap: var(--card-gap, 1rem);
+  width: 100%;
+  margin: 0.5rem 0;
+}
+
+.game-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  padding: 1rem 1.1rem;
+  border-radius: 14px;
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition:
+    transform 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.game-card:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+/*
+ * `.is-focused` mirrors `:focus-visible` but is driven by `focusedIndex`
+ * state rather than the browser's focus heuristic. Gamepad-driven focus
+ * changes call `.focus()` programmatically, which browsers often don't
+ * treat as "visible" focus — so the state-driven class is what guarantees
+ * the highlight actually shows for D-pad/stick navigation.
+ */
+.game-card:focus-visible,
+.game-card.is-focused,
+.launch-button:focus-visible,
+.launch-button.is-focused {
+  outline: 2px solid #a9b4ff;
+  outline-offset: 3px;
+  background: rgba(88, 101, 242, 0.18);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(88, 101, 242, 0.35);
+}
+
+.game-card-title {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.game-card-meta {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .title {

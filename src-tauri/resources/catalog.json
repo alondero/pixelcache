@@ -1,0 +1,114 @@
+{
+  "games": [
+    {
+      "id": "star-fox-64",
+      "developer": "Nintendo EAD",
+      "primaryReleaseId": "star-fox-64-ntsc",
+      "relations": []
+    },
+    {
+      "id": "super-mario-bros-3",
+      "developer": "Nintendo",
+      "primaryReleaseId": "super-mario-bros-3-ntsc",
+      "relations": []
+    },
+    {
+      "id": "chrono-trigger",
+      "developer": "Square",
+      "primaryReleaseId": "chrono-trigger-ntsc",
+      "relations": []
+    },
+    {
+      "id": "metroid",
+      "developer": "Nintendo R&D1",
+      "primaryReleaseId": "metroid-ntsc",
+      "relations": []
+    }
+  ],
+  "releases": [
+    {
+      "id": "star-fox-64-ntsc",
+      "gameId": "star-fox-64",
+      "title": "Star Fox 64",
+      "region": "NTSC",
+      "platform": "n64",
+      "releaseType": "retail",
+      "publisher": "Nintendo",
+      "filePath": "star-fox-64/star-fox-64-ntsc.z64",
+      "media": {
+        "image": "star-fox-64/cover.webp"
+      }
+    },
+    {
+      "id": "lylat-wars-pal",
+      "gameId": "star-fox-64",
+      "title": "Lylat Wars",
+      "region": "PAL",
+      "platform": "n64",
+      "releaseType": "retail",
+      "publisher": "Nintendo",
+      "filePath": "star-fox-64/lylat-wars-pal.z64"
+    },
+    {
+      "id": "super-mario-bros-3-ntsc",
+      "gameId": "super-mario-bros-3",
+      "title": "Super Mario Bros. 3",
+      "region": "NTSC",
+      "platform": "snes",
+      "releaseType": "retail",
+      "publisher": "Nintendo",
+      "filePath": "super-mario-bros-3/super-mario-bros-3-ntsc.sfc"
+    },
+    {
+      "id": "super-mario-bros-3-mix",
+      "gameId": "super-mario-bros-3",
+      "title": "Super Mario Bros. 3 Mix",
+      "platform": "snes",
+      "releaseType": "hack",
+      "filePath": "super-mario-bros-3/super-mario-bros-3-mix.sfc",
+      "media": {
+        "video": "super-mario-bros-3/mix-preview.webm"
+      }
+    },
+    {
+      "id": "chrono-trigger-ntsc",
+      "gameId": "chrono-trigger",
+      "title": "Chrono Trigger",
+      "region": "NTSC",
+      "platform": "snes",
+      "releaseType": "retail",
+      "publisher": "Square",
+      "filePath": "chrono-trigger/chrono-trigger-ntsc.sfc"
+    },
+    {
+      "id": "metroid-ntsc",
+      "gameId": "metroid",
+      "title": "Metroid",
+      "region": "NTSC",
+      "platform": "nes",
+      "releaseType": "retail",
+      "publisher": "Nintendo",
+      "filePath": "metroid/metroid-ntsc.nes"
+    }
+  ],
+  "decks": [
+    {
+      "id": "n64-mupen",
+      "platform": "n64",
+      "executablePath": "mupen64plus",
+      "arguments": ["--fullscreen"]
+    },
+    {
+      "id": "snes-snes9x",
+      "platform": "snes",
+      "executablePath": "snes9x",
+      "arguments": []
+    },
+    {
+      "id": "nes-mesen",
+      "platform": "nes",
+      "executablePath": "mesen",
+      "arguments": []
+    }
+  ]
+}
