@@ -150,9 +150,10 @@ pub fn load_catalog_from_path(path: &Path) -> Result<Catalog, CatalogError> {
 /// resource directory (see the `bundle.resources` mapping in `tauri.conf.json`).
 const CATALOG_RESOURCE_FILE: &str = "catalog.json";
 
-/// Tauri command invoked once on frontend startup to load the Catalog.
-#[tauri::command]
-pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
+/// Load the catalog bundled with the app, resolving it from the resource
+/// directory. Shared by the `load_catalog` command and the launch engine
+/// (which re-reads the catalog to resolve a Release into a Deck command).
+pub fn load_bundled_catalog(app: &tauri::AppHandle) -> Result<Catalog, String> {
     use tauri::path::BaseDirectory;
     use tauri::Manager;
 
@@ -161,6 +162,12 @@ pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
         .resolve(CATALOG_RESOURCE_FILE, BaseDirectory::Resource)
         .map_err(|e| format!("failed to resolve catalog resource path: {e}"))?;
     load_catalog_from_path(&path).map_err(|e| e.to_string())
+}
+
+/// Tauri command invoked once on frontend startup to load the Catalog.
+#[tauri::command]
+pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
+    load_bundled_catalog(&app)
 }
 
 #[cfg(test)]

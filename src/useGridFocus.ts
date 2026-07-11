@@ -42,6 +42,14 @@ interface UseGridFocusOptions {
   itemWidth?: number;
   /** Gap between cards, matching the CSS grid's `gap`. */
   gap?: number;
+  /**
+   * While `false`, the hook ignores all keyboard/gamepad input and never calls
+   * `.focus()`. Needed when two instances coexist (e.g. the game grid behind
+   * an open details panel): unlike the keyboard handler, the gamepad poll has
+   * no `document.activeElement` to consult, so without this flag both
+   * instances would react to the same D-pad press and fight over focus.
+   */
+  enabled?: boolean;
 }
 
 interface UseGridFocusResult {
@@ -51,6 +59,12 @@ interface UseGridFocusResult {
   focusedIndex: number;
   /** Attach to each item at `index` to register it as a focus target. */
   registerItemRef: (index: number) => (el: HTMLElement | null) => void;
+  /**
+   * Sync the roving focus to `index` when focus arrives by other means (e.g.
+   * a mouse click on an item), so subsequent arrow/D-pad moves — and focus
+   * restoration after an overlay closes — continue from that item.
+   */
+  focusItem: (index: number) => void;
 }
 
 /**
@@ -64,6 +78,7 @@ export function useGridFocus({
   itemCount,
   itemWidth = 220,
   gap = 16,
+  enabled = true,
 }: UseGridFocusOptions): UseGridFocusResult {
   const containerRef = useRef<HTMLElement | null>(null);
   const itemRefs = useRef<Array<HTMLElement | null>>([]);
@@ -97,6 +112,7 @@ export function useGridFocus({
   );
 
   useEffect(() => {
+    if (!enabled) return;
     function onKeyDown(event: KeyboardEvent) {
       const direction = ARROW_KEY_DIRECTIONS[event.key];
       if (!direction) return;
@@ -111,9 +127,10 @@ export function useGridFocus({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [move]);
+  }, [move, enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     if (typeof navigator.getGamepads !== "function") return;
 
     let frameId: number;
@@ -135,11 +152,14 @@ export function useGridFocus({
 
     frameId = requestAnimationFrame(poll);
     return () => cancelAnimationFrame(frameId);
-  }, [move]);
+  }, [move, enabled]);
 
+  // `enabled` is a dependency so that re-enabling (details panel closing)
+  // restores focus to the grid item the user was on before it opened.
   useEffect(() => {
+    if (!enabled) return;
     itemRefs.current[focusedIndex]?.focus();
-  }, [focusedIndex]);
+  }, [focusedIndex, enabled]);
 
   const registerItemRef = useCallback(
     (index: number) => (el: HTMLElement | null) => {
@@ -148,5 +168,7 @@ export function useGridFocus({
     [],
   );
 
-  return { containerRef, focusedIndex, registerItemRef };
+  const focusItem = useCallback((index: number) => setFocusedIndex(index), []);
+
+  return { containerRef, focusedIndex, registerItemRef, focusItem };
 }
