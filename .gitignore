@@ -1,0 +1,22 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+dist-ssr
+coverage
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+*.local
+
+# Git-bash / Cygwin crash dumps (ephemeral)
+*.stackdump
+
+# Rust / Tauri build artifacts (src-tauri/.gitignore covers target + gen too)
+src-tauri/target
+src-tauri/gen
