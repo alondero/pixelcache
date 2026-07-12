@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Catalog } from "./catalog";
+import type { Catalog, Release } from "./catalog";
+import { peerReleases, primaryReleaseTitle } from "./catalogView";
+import GameDetailsPanel from "./GameDetailsPanel";
 import GameGrid from "./GameGrid";
 import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
 import { useGridFocus } from "./useGridFocus";
@@ -37,6 +39,7 @@ function App() {
     kind: "loading",
   });
   const [scanStatus, setScanStatus] = useState<ScanStatus>({ kind: "idle" });
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,17 +56,23 @@ function App() {
     };
   }, []);
 
-  const games =
-    catalogStatus.kind === "loaded" ? catalogStatus.catalog.games : [];
+  const catalog =
+    catalogStatus.kind === "loaded" ? catalogStatus.catalog : null;
+  const games = catalog?.games ?? [];
+  const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
   // The roving focus loop covers every Game card plus the two action buttons,
-  // so arrow keys/D-pad can always reach them regardless of catalog size.
+  // so arrow keys/D-pad can always reach them regardless of catalog size. It is
+  // suspended while the details panel is open — the panel runs its own focus
+  // loop, and only one may listen to the gamepad at a time.
   const launchButtonIndex = games.length;
   const rescanButtonIndex = launchButtonIndex + 1;
-  const { containerRef, focusedIndex, registerItemRef } = useGridFocus({
-    itemCount: rescanButtonIndex + 1,
-    itemWidth: CARD_MIN_WIDTH_PX,
-    gap: CARD_GAP_PX,
-  });
+  const { containerRef, focusedIndex, registerItemRef, focusItem } =
+    useGridFocus({
+      itemCount: rescanButtonIndex + 1,
+      itemWidth: CARD_MIN_WIDTH_PX,
+      gap: CARD_GAP_PX,
+      enabled: selectedGame === null,
+    });
 
   async function launchTestGame() {
     setLaunchStatus({ kind: "launching" });
@@ -81,13 +90,30 @@ function App() {
   async function rescanVault() {
     setScanStatus({ kind: "scanning" });
     try {
-      const catalog = await invoke<Catalog>("scan_vault");
-      setCatalogStatus({ kind: "loaded", catalog });
-      setScanStatus({ kind: "scanned", gameCount: catalog.games.length });
+      const scanned = await invoke<Catalog>("scan_vault");
+      setCatalogStatus({ kind: "loaded", catalog: scanned });
+      setScanStatus({ kind: "scanned", gameCount: scanned.games.length });
     } catch (error) {
       setScanStatus({ kind: "error", message: String(error) });
     }
   }
+
+  async function launchRelease(release: Release) {
+    setLaunchStatus({ kind: "launching" });
+    try {
+      const result = await invoke<LaunchResult>("launch_release", {
+        releaseId: release.id,
+      });
+      setLaunchStatus({ kind: "launched", result });
+    } catch (error) {
+      setLaunchStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  const selectedReleases =
+    catalog && selectedGame ? peerReleases(catalog, selectedGame) : [];
+  const selectedTitle =
+    catalog && selectedGame ? primaryReleaseTitle(catalog, selectedGame) : "";
 
   return (
     <main className="app">
@@ -95,12 +121,14 @@ function App() {
         <h1 className="title">Pixelcache</h1>
         <p className="subtitle">Lightweight cross-platform game launcher</p>
 
-        {catalogStatus.kind === "loaded" && (
+        {catalog && (
           <GameGrid
-            catalog={catalogStatus.catalog}
+            catalog={catalog}
             containerRef={containerRef}
             focusedIndex={focusedIndex}
             registerItemRef={registerItemRef}
+            focusItem={focusItem}
+            onSelectGame={setSelectedGameId}
           />
         )}
         {catalogStatus.kind === "error" && (
@@ -145,6 +173,16 @@ function App() {
           {scanStatus.kind === "error" && `Scan failed: ${scanStatus.message}`}
         </p>
       </div>
+
+      {selectedGame && (
+        <GameDetailsPanel
+          title={selectedTitle}
+          developer={selectedGame.developer}
+          releases={selectedReleases}
+          onLaunch={launchRelease}
+          onClose={() => setSelectedGameId(null)}
+        />
+      )}
     </main>
   );
 }

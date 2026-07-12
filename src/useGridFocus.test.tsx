@@ -5,11 +5,18 @@ import type { RefObject } from "react";
 import { useGridFocus } from "./useGridFocus";
 
 /** Minimal harness rendering N focusable buttons wired to the hook. */
-function Harness({ itemCount }: { itemCount: number }) {
+function Harness({
+  itemCount,
+  enabled = true,
+}: {
+  itemCount: number;
+  enabled?: boolean;
+}) {
   const { containerRef, focusedIndex, registerItemRef } = useGridFocus({
     itemCount,
     itemWidth: 100,
     gap: 0,
+    enabled,
   });
   return (
     <div ref={containerRef as RefObject<HTMLDivElement>} data-testid="grid">
@@ -96,6 +103,33 @@ describe("useGridFocus", () => {
     await user.keyboard("{ArrowRight}");
     expect(screen.getByLabelText("unrelated")).toHaveFocus();
     expect(screen.getByText("item-0")).not.toHaveFocus();
+  });
+
+  it("does not react to arrow keys or claim focus while disabled", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <input aria-label="elsewhere" />
+        <Harness itemCount={3} enabled={false} />
+      </>,
+    );
+
+    // A disabled grid must not pull focus on mount…
+    expect(screen.getByText("item-0")).not.toHaveFocus();
+
+    // …and must ignore arrows even if one of its items is focused directly
+    // (e.g. a leftover tab stop) so an overlay's own navigation wins.
+    screen.getByText("item-0").focus();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByText("item-0")).toHaveFocus();
+  });
+
+  it("re-focuses the current item when re-enabled", () => {
+    const { rerender } = render(<Harness itemCount={3} enabled={false} />);
+    expect(screen.getByText("item-0")).not.toHaveFocus();
+
+    rerender(<Harness itemCount={3} enabled={true} />);
+    expect(screen.getByText("item-0")).toHaveFocus();
   });
 
   it("moves focus in response to gamepad D-pad button presses", async () => {

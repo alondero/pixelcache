@@ -1,30 +1,26 @@
-//! Launch engine (tracer-bullet stage).
+//! Launch engine.
 //!
 //! This module owns the logic for turning a launch request into an actual OS
 //! process. It is deliberately split into three layers so the decision-making is
 //! unit-testable without ever spawning a real process (see the PRD's
 //! "Process Launch Mocking" testing decision):
 //!
-//! 1. [`resolve_spec`]   — decide *what* to launch (pure).
-//! 2. [`build_command`]  — assemble the argv into a [`Command`] (pure-ish; no spawn).
-//! 3. [`spawn`]          — the only function that touches the OS.
+//! 1. **Decision** — [`resolve_spec`] (placeholder) / [`resolve_release_spec`]
+//!    (Catalog-aware): decide *what* to launch. Pure.
+//! 2. [`build_command`] — assemble the argv into a [`Command`]. Pure-ish; no spawn.
+//! 3. [`spawn`] — the only function that touches the OS.
 //!
-//! For this first issue (#1) there is no Catalog or Deck yet, so the launch
-//! target is a hardcoded, harmless placeholder standing in for a real emulator +
-//! ROM. It can be overridden at runtime via environment variables, which lets a
-//! developer point it at a real emulator without recompiling:
-//!
-//! ```text
-//! PIXELCACHE_LAUNCH_CMD="C:\\RetroArch\\retroarch.exe"
-//! PIXELCACHE_LAUNCH_ARGS="-L cores/snes9x_libretro.dll C:\\roms\\game.sfc"
-//! ```
-//!
-//! When the real Execution Engine + `Deck` (per `docs/prd-mvp.md`) land, this
-//! placeholder resolution is replaced by looking the command up from the Deck
-//! configuration for the host platform.
+//! The placeholder [`launch_test_game`] (used by the "Launch Test Game" button
+//! during local dev) targets a harmless per-platform default overridable via
+//! `PIXELCACHE_LAUNCH_CMD` / `PIXELCACHE_LAUNCH_ARGS`. The real launch path is
+//! [`launch_release`], which looks a Release up in the bundled Catalog and
+//! follows the [`crate::catalog::Deck`] configured for the Release's platform.
+//! Release file paths resolve against `PIXELCACHE_VAULT_DIR` when set.
 
+use crate::catalog::Catalog;
 use serde::Serialize;
 use std::fmt;
+use std::path::Path;
 use std::process::Command;
 
 /// Environment variable overriding the program to launch.
@@ -33,6 +29,10 @@ pub const LAUNCH_CMD_ENV: &str = "PIXELCACHE_LAUNCH_CMD";
 /// Arguments are whitespace-separated (sufficient for the tracer bullet; the
 /// real Deck schema carries a structured `arguments: Vec<String>`).
 pub const LAUNCH_ARGS_ENV: &str = "PIXELCACHE_LAUNCH_ARGS";
+/// Environment variable pointing at the local Vault root directory. Release
+/// `filePath`s are resolved relative to it; when unset, they are passed to the
+/// Deck executable as-is (relative to the process working directory).
+pub const VAULT_DIR_ENV: &str = "PIXELCACHE_VAULT_DIR";
 
 /// A resolved decision about what to launch: the executable and its arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -65,6 +65,10 @@ pub enum LaunchError {
         program: String,
         source: std::io::Error,
     },
+    /// The requested release id does not exist in the Catalog.
+    UnknownRelease { release_id: String },
+    /// The Catalog has no Deck configured for the release's platform.
+    NoDeckForPlatform { platform: String },
 }
 
 impl fmt::Display for LaunchError {
@@ -72,6 +76,12 @@ impl fmt::Display for LaunchError {
         match self {
             LaunchError::Spawn { program, source } => {
                 write!(f, "failed to launch '{program}': {source}")
+            }
+            LaunchError::UnknownRelease { release_id } => {
+                write!(f, "no release '{release_id}' in the catalog")
+            }
+            LaunchError::NoDeckForPlatform { platform } => {
+                write!(f, "no deck configured for platform '{platform}'")
             }
         }
     }
@@ -81,6 +91,7 @@ impl std::error::Error for LaunchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             LaunchError::Spawn { source, .. } => Some(source),
+            LaunchError::UnknownRelease { .. } | LaunchError::NoDeckForPlatform { .. } => None,
         }
     }
 }
@@ -148,6 +159,52 @@ fn resolve_from_env() -> LaunchSpec {
     )
 }
 
+/// Decide what to launch for a specific Release: the Deck configured for the
+/// release's platform provides the program and base arguments, and the
+/// release's `filePath` — resolved against `vault_root` when one is set — is
+/// appended as the final argument.
+///
+/// Pure over its inputs so every failure mode (unknown release, missing deck)
+/// and the exact argv ordering are unit-testable without spawning anything,
+/// per the PRD's "Process Launch Mocking" testing decision.
+pub fn resolve_release_spec(
+    catalog: &Catalog,
+    release_id: &str,
+    vault_root: Option<&str>,
+) -> Result<LaunchSpec, LaunchError> {
+    let release = catalog
+        .releases
+        .iter()
+        .find(|r| r.id == release_id)
+        .ok_or_else(|| LaunchError::UnknownRelease {
+            release_id: release_id.to_string(),
+        })?;
+
+    let deck = catalog
+        .decks
+        .iter()
+        .find(|d| d.platform == release.platform)
+        .ok_or_else(|| LaunchError::NoDeckForPlatform {
+            platform: release.platform.clone(),
+        })?;
+
+    let rom_path = match vault_root {
+        Some(root) if !root.trim().is_empty() => Path::new(root.trim())
+            .join(&release.file_path)
+            .to_string_lossy()
+            .into_owned(),
+        _ => release.file_path.clone(),
+    };
+
+    let mut args = deck.arguments.clone();
+    args.push(rom_path);
+
+    Ok(LaunchSpec {
+        program: deck.executable_path.clone(),
+        args,
+    })
+}
+
 /// Build (but do not spawn) the OS command for a spec.
 pub fn build_command(spec: &LaunchSpec) -> Command {
     let mut command = Command::new(&spec.program);
@@ -180,6 +237,22 @@ pub fn spawn(spec: &LaunchSpec) -> Result<LaunchResult, LaunchError> {
 #[tauri::command]
 pub async fn launch_test_game() -> Result<LaunchResult, String> {
     let spec = resolve_from_env();
+    spawn(&spec).map_err(|e| e.to_string())
+}
+
+/// Tauri command invoked when the user clicks Play on a Release in the Game
+/// details panel. Looks the Release up in the bundled Catalog, resolves the
+/// Deck for its platform, and spawns the configured executable with the
+/// release file appended — without waiting for the child to exit.
+#[tauri::command]
+pub async fn launch_release(
+    app: tauri::AppHandle,
+    release_id: String,
+) -> Result<LaunchResult, String> {
+    let catalog = crate::catalog::load_bundled_catalog(&app)?;
+    let vault_root = std::env::var(VAULT_DIR_ENV).ok();
+    let spec = resolve_release_spec(&catalog, &release_id, vault_root.as_deref())
+        .map_err(|e| e.to_string())?;
     spawn(&spec).map_err(|e| e.to_string())
 }
 
@@ -250,6 +323,93 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("retroarch"), "message was: {message}");
         assert!(message.contains("no such file"), "message was: {message}");
+    }
+
+    /// A minimal catalog with one game, two releases (n64 + snes), and a deck
+    /// for n64 only — enough to exercise every `resolve_release_spec` branch.
+    fn sample_catalog() -> Catalog {
+        crate::catalog::Catalog::from_json(
+            r#"{
+                "games": [
+                    {"id": "star-fox-64", "primaryReleaseId": "star-fox-64-ntsc", "relations": []}
+                ],
+                "releases": [
+                    {
+                        "id": "star-fox-64-ntsc",
+                        "gameId": "star-fox-64",
+                        "title": "Star Fox 64",
+                        "platform": "n64",
+                        "releaseType": "retail",
+                        "filePath": "star-fox-64/ntsc.z64"
+                    },
+                    {
+                        "id": "mario-mix",
+                        "gameId": "star-fox-64",
+                        "title": "Mix Hack",
+                        "platform": "snes",
+                        "releaseType": "hack",
+                        "filePath": "hacks/mix.sfc"
+                    }
+                ],
+                "decks": [
+                    {
+                        "id": "n64-mupen",
+                        "platform": "n64",
+                        "executablePath": "mupen64plus",
+                        "arguments": ["--fullscreen"]
+                    }
+                ]
+            }"#,
+        )
+        .expect("sample catalog json is valid")
+    }
+
+    #[test]
+    fn release_spec_uses_deck_program_args_then_file_path() {
+        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", None)
+            .expect("release resolves");
+        assert_eq!(spec.program, "mupen64plus");
+        assert_eq!(
+            spec.args,
+            vec![
+                "--fullscreen".to_string(),
+                "star-fox-64/ntsc.z64".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_spec_joins_file_path_onto_vault_root() {
+        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("/vault"))
+            .expect("release resolves");
+        let rom = spec.args.last().expect("rom path appended");
+        assert!(
+            rom.starts_with("/vault") && rom.contains("ntsc.z64"),
+            "rom path was: {rom}"
+        );
+    }
+
+    #[test]
+    fn release_spec_blank_vault_root_is_ignored() {
+        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("   "))
+            .expect("release resolves");
+        assert_eq!(spec.args.last().unwrap(), "star-fox-64/ntsc.z64");
+    }
+
+    #[test]
+    fn release_spec_unknown_release_is_an_error() {
+        let err = resolve_release_spec(&sample_catalog(), "does-not-exist", None)
+            .expect_err("unknown release should fail");
+        assert!(matches!(err, LaunchError::UnknownRelease { .. }));
+        assert!(err.to_string().contains("does-not-exist"));
+    }
+
+    #[test]
+    fn release_spec_missing_deck_for_platform_is_an_error() {
+        let err = resolve_release_spec(&sample_catalog(), "mario-mix", None)
+            .expect_err("snes has no deck configured");
+        assert!(matches!(err, LaunchError::NoDeckForPlatform { .. }));
+        assert!(err.to_string().contains("snes"), "message: {err}");
     }
 
     #[test]

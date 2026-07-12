@@ -8,6 +8,10 @@ interface GameGridProps {
   containerRef: RefObject<HTMLElement | null>;
   focusedIndex: number;
   registerItemRef: (index: number) => (el: HTMLElement | null) => void;
+  /** Sync the roving focus when a card gains focus by mouse click. */
+  focusItem: (index: number) => void;
+  /** Called with the Game's id when its card is activated (click/Enter/A). */
+  onSelectGame: (gameId: string) => void;
 }
 
 // Forwarded as CSS custom properties so `.game-grid` in App.css always
@@ -23,6 +27,8 @@ function GameGrid({
   containerRef,
   focusedIndex,
   registerItemRef,
+  focusItem,
+  onSelectGame,
 }: GameGridProps) {
   const cards = gameCardInfos(catalog);
 
@@ -42,6 +48,8 @@ function GameGrid({
           ref={registerItemRef(index)}
           tabIndex={focusedIndex === index ? 0 : -1}
           role="gridcell"
+          onClick={() => onSelectGame(card.game.id)}
+          onFocus={() => focusItem(index)}
         >
           <span className="game-card-title">{card.title}</span>
           <span className="game-card-meta">
