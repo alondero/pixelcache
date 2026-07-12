@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Catalog, Release } from "./catalog";
-import { peerReleases } from "./catalogView";
+import { peerReleases, primaryReleaseTitle } from "./catalogView";
 import GameDetailsPanel from "./GameDetailsPanel";
 import GameGrid from "./GameGrid";
 import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
@@ -91,10 +91,7 @@ function App() {
   const selectedReleases =
     catalog && selectedGame ? peerReleases(catalog, selectedGame) : [];
   const selectedTitle =
-    selectedReleases.find((r) => r.id === selectedGame?.primaryReleaseId)
-      ?.title ??
-    selectedGame?.id ??
-    "";
+    catalog && selectedGame ? primaryReleaseTitle(catalog, selectedGame) : "";
 
   return (
     <main className="app">

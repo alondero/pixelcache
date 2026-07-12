@@ -13,15 +13,22 @@ export interface GameCardInfo {
  * game id if the primary release is missing from the catalog).
  */
 export function gameCardInfos(catalog: Catalog): GameCardInfo[] {
-  return catalog.games.map((game) => {
-    const releases = catalog.releases.filter((r) => r.gameId === game.id);
-    const primary = releases.find((r) => r.id === game.primaryReleaseId);
-    return {
-      game,
-      title: primary?.title ?? game.id,
-      releaseCount: releases.length,
-    };
-  });
+  return catalog.games.map((game) => ({
+    game,
+    title: primaryReleaseTitle(catalog, game),
+    releaseCount: catalog.releases.filter((r) => r.gameId === game.id).length,
+  }));
+}
+
+/**
+ * The display title for a Game: the primary release's title, or the game's id
+ * if the primary release is missing from the catalog. Shared by the grid
+ * (for card titles) and the details panel (for the panel header) so the
+ * fallback order stays in one place.
+ */
+export function primaryReleaseTitle(catalog: Catalog, game: Game): string {
+  const primary = catalog.releases.find((r) => r.id === game.primaryReleaseId);
+  return primary?.title ?? game.id;
 }
 
 /**

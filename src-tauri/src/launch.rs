@@ -1,27 +1,21 @@
-//! Launch engine (tracer-bullet stage).
+//! Launch engine.
 //!
 //! This module owns the logic for turning a launch request into an actual OS
 //! process. It is deliberately split into three layers so the decision-making is
 //! unit-testable without ever spawning a real process (see the PRD's
 //! "Process Launch Mocking" testing decision):
 //!
-//! 1. [`resolve_spec`]   — decide *what* to launch (pure).
-//! 2. [`build_command`]  — assemble the argv into a [`Command`] (pure-ish; no spawn).
-//! 3. [`spawn`]          — the only function that touches the OS.
+//! 1. **Decision** — [`resolve_spec`] (placeholder) / [`resolve_release_spec`]
+//!    (Catalog-aware): decide *what* to launch. Pure.
+//! 2. [`build_command`] — assemble the argv into a [`Command`]. Pure-ish; no spawn.
+//! 3. [`spawn`] — the only function that touches the OS.
 //!
-//! For this first issue (#1) there is no Catalog or Deck yet, so the launch
-//! target is a hardcoded, harmless placeholder standing in for a real emulator +
-//! ROM. It can be overridden at runtime via environment variables, which lets a
-//! developer point it at a real emulator without recompiling:
-//!
-//! ```text
-//! PIXELCACHE_LAUNCH_CMD="C:\\RetroArch\\retroarch.exe"
-//! PIXELCACHE_LAUNCH_ARGS="-L cores/snes9x_libretro.dll C:\\roms\\game.sfc"
-//! ```
-//!
-//! When the real Execution Engine + `Deck` (per `docs/prd-mvp.md`) land, this
-//! placeholder resolution is replaced by looking the command up from the Deck
-//! configuration for the host platform.
+//! The placeholder [`launch_test_game`] (used by the "Launch Test Game" button
+//! during local dev) targets a harmless per-platform default overridable via
+//! `PIXELCACHE_LAUNCH_CMD` / `PIXELCACHE_LAUNCH_ARGS`. The real launch path is
+//! [`launch_release`], which looks a Release up in the bundled Catalog and
+//! follows the [`crate::catalog::Deck`] configured for the Release's platform.
+//! Release file paths resolve against `PIXELCACHE_VAULT_DIR` when set.
 
 use crate::catalog::Catalog;
 use serde::Serialize;

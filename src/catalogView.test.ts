@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { gameCardInfos, mediaUrl, peerReleases } from "./catalogView";
+import {
+  gameCardInfos,
+  mediaUrl,
+  peerReleases,
+  primaryReleaseTitle,
+} from "./catalogView";
 import type { Catalog } from "./catalog";
 
 function catalog(): Catalog {
@@ -126,5 +131,18 @@ describe("mediaUrl", () => {
     expect(mediaUrl("star-fox-64/preview.webm")).toBe(
       "media/star-fox-64/preview.webm",
     );
+  });
+});
+
+describe("primaryReleaseTitle", () => {
+  it("returns the primary release's title", () => {
+    const data = catalog();
+    expect(primaryReleaseTitle(data, data.games[0])).toBe("Star Fox 64");
+  });
+
+  it("falls back to the game id when the primary release is missing", () => {
+    const data = catalog();
+    data.games[0].primaryReleaseId = "does-not-exist";
+    expect(primaryReleaseTitle(data, data.games[0])).toBe("star-fox-64");
   });
 });

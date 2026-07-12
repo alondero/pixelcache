@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Release } from "./catalog";
 import { mediaUrl } from "./catalogView";
 import { useGridFocus } from "./useGridFocus";
@@ -39,6 +39,11 @@ function GameDetailsPanel({
   // Which release drives the preview pane. Focus (keyboard/gamepad) and hover
   // both update it, so mouse and controller users get the same behavior.
   const [highlightedIndex, setHighlightedIndex] = useState(0);
+  // `src` can swap on the highlighted video stream; `useEffect` calls
+  // `.load()` on the <video> when the source changes and pauses the previous
+  // stream, so a stalled previous one can't keep playing underneath.
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
+  const previousVideoSrc = useRef<string | null>(null);
 
   // Roving focus over every release row plus the Close button at the end.
   const closeIndex = releases.length;
@@ -50,6 +55,20 @@ function GameDetailsPanel({
   const highlighted = releases[highlightedIndex];
   const video = highlighted?.media?.video;
   const image = highlighted?.media?.image;
+
+  // Stop and discard the previously highlighted stream when the source
+  // changes. Without this, the browser keeps playing the old `<video>` while
+  // the new one buffers (the muted-autoplay contract replays it the moment
+  // it can), so two streams end up audible/visible until the old one is
+  // garbage-collected.
+  useEffect(() => {
+    const node = previewVideoRef.current;
+    const previous = previousVideoSrc.current;
+    if (node && previous !== null && previous !== video) {
+      node.pause();
+    }
+    previousVideoSrc.current = video ?? null;
+  }, [video]);
 
   return (
     <div className="details-backdrop">
@@ -81,12 +100,12 @@ function GameDetailsPanel({
 
         <div className="release-preview">
           {video ? (
-            // `key` forces a fresh element per source: reusing one <video>
-            // across highlight changes would keep playing the old stream.
-            // Muted looping autoplay is the only form WebViews start without
-            // a user gesture.
+            // Reusing one <video> across highlight changes keeps the element
+            // around for transitions; the matching `useEffect` above explicitly
+            // pauses the previous stream when the source changes, so two
+            // streams aren't audible/visible at once. Muted looping autoplay
+            // is the only form WebViews start without a user gesture.
             <video
-              key={video}
               data-testid="release-preview-video"
               className="release-preview-media"
               src={mediaUrl(video)}
@@ -94,6 +113,7 @@ function GameDetailsPanel({
               muted
               loop
               playsInline
+              ref={previewVideoRef}
             />
           ) : image ? (
             <img
