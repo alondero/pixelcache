@@ -42,9 +42,25 @@ export interface Deck {
   arguments: string[];
 }
 
-/** The centralized master directory of all Game, Release, and Deck definitions. */
+/**
+ * A player-curated collection of specific Releases, browsable and launchable
+ * from its own screen (e.g. a "ROM Hacks" list mixing hacks across games).
+ * Holds only references to Releases by id; the Releases live once in
+ * `Catalog.releases`.
+ */
+export interface Playlist {
+  id: string;
+  name: string;
+  releaseIds: string[];
+}
+
+/**
+ * The centralized master directory of all Game, Release, Deck, and Playlist
+ * definitions.
+ */
 export interface Catalog {
   games: Game[];
   releases: Release[];
   decks: Deck[];
+  playlists: Playlist[];
 }

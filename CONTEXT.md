@@ -24,8 +24,12 @@ _Avoid_: Cache folder, cache log
 The logical engine or execution environment configuration used to run a specific Release (e.g., `snes`, `dolphin`, `steam`, `pc`). On each device, a Deck maps to a local executable or command prefix.
 _Avoid_: Runner, Emulator, Console
 
+**Playlist**:
+A player-curated collection that references specific Releases by id (e.g., a "ROM Hacks" list mixing hacks across Games). It holds only references — the Releases themselves live once in the Catalog — so a Release can appear in many Playlists without duplication.
+_Avoid_: Collection, Category, Folder
+
 **Catalog**:
-The centralized master directory containing all Game, Release, and Deck definitions, acting as the syncable configuration.
+The centralized master directory containing all Game, Release, Deck, and Playlist definitions, acting as the syncable configuration.
 _Avoid_: Database, Config File
 
 **Vault**:

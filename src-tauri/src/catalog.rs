@@ -76,8 +76,25 @@ pub struct Deck {
     pub arguments: Vec<String>,
 }
 
-/// The centralized master directory of all [`Game`], [`Release`], and [`Deck`]
-/// definitions.
+/// A player-curated collection of specific [`Release`]s, browsable and launchable
+/// from its own screen (e.g. a "ROM Hacks" list mixing hacks across games).
+///
+/// A Playlist owns only *references* to Releases by id — the Releases themselves
+/// still live once in [`Catalog::releases`], so a Release can appear in several
+/// playlists without being duplicated. Dangling ids (a `release_id` with no
+/// matching Release) are tolerated by the schema and simply skipped when the
+/// playlist is resolved for display.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Playlist {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub release_ids: Vec<String>,
+}
+
+/// The centralized master directory of all [`Game`], [`Release`], [`Deck`], and
+/// [`Playlist`] definitions.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Catalog {
@@ -87,6 +104,8 @@ pub struct Catalog {
     pub releases: Vec<Release>,
     #[serde(default)]
     pub decks: Vec<Deck>,
+    #[serde(default)]
+    pub playlists: Vec<Playlist>,
 }
 
 /// Errors that can occur while loading a [`Catalog`] from disk.
@@ -227,6 +246,13 @@ mod tests {
                     "executablePath": "mupen64plus",
                     "arguments": ["--fullscreen"]
                 }
+            ],
+            "playlists": [
+                {
+                    "id": "favourites",
+                    "name": "Favourites",
+                    "releaseIds": ["lylat-wars-pal", "star-fox-64-ntsc"]
+                }
             ]
         }"#
     }
@@ -280,6 +306,28 @@ mod tests {
         assert!(catalog.games.is_empty());
         assert!(catalog.releases.is_empty());
         assert!(catalog.decks.is_empty());
+        assert!(catalog.playlists.is_empty());
+    }
+
+    #[test]
+    fn parses_playlists_with_their_release_references() {
+        let catalog = Catalog::from_json(sample_json()).expect("valid catalog json");
+        assert_eq!(catalog.playlists.len(), 1);
+        let playlist = &catalog.playlists[0];
+        assert_eq!(playlist.id, "favourites");
+        assert_eq!(playlist.name, "Favourites");
+        assert_eq!(
+            playlist.release_ids,
+            vec!["lylat-wars-pal".to_string(), "star-fox-64-ntsc".to_string()]
+        );
+    }
+
+    #[test]
+    fn playlist_release_ids_default_to_empty_when_absent() {
+        let catalog =
+            Catalog::from_json(r#"{ "playlists": [{ "id": "empty", "name": "Empty" }] }"#)
+                .expect("playlist without releaseIds is valid");
+        assert!(catalog.playlists[0].release_ids.is_empty());
     }
 
     #[test]

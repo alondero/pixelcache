@@ -160,6 +160,9 @@ pub fn build_catalog(files: &[RomFile]) -> Catalog {
         games,
         releases,
         decks: Vec::new(),
+        // A Vault scan discovers Games/Releases from ROM files; Playlists are a
+        // player-curated concept the scanner never generates.
+        playlists: Vec::new(),
     }
 }
 

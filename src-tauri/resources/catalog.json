@@ -110,5 +110,21 @@
       "executablePath": "mesen",
       "arguments": []
     }
+  ],
+  "playlists": [
+    {
+      "id": "rom-hacks",
+      "name": "ROM Hacks",
+      "releaseIds": ["super-mario-bros-3-mix"]
+    },
+    {
+      "id": "nintendo-classics",
+      "name": "Nintendo Classics",
+      "releaseIds": [
+        "star-fox-64-ntsc",
+        "metroid-ntsc",
+        "super-mario-bros-3-ntsc"
+      ]
+    }
   ]
 }
