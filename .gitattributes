@@ -1,0 +1,12 @@
+# Normalize all text files to LF in the repository and on checkout, so the
+# Prettier format check (`endOfLine: "lf"`) passes identically on the Linux
+# and Windows CI runners. Without this, a Windows checkout with core.autocrlf
+# rewrites files to CRLF and `prettier --check` fails on every file.
+* text=auto eol=lf
+
+# Binary assets — never normalize line endings.
+*.png binary
+*.ico binary
+*.icns binary
+*.webp binary
+*.webm binary
