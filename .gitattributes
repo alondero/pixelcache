@@ -1,0 +1,18 @@
+# Normalize all text files to LF in the repository and on checkout, on every
+# platform. Without this, Windows runners check out with CRLF (git autocrlf) and
+# `prettier --check` — which expects LF — fails the whole repo in CI even though
+# nothing is actually wrong. Enforcing LF keeps the green gate identical on
+# Windows, Linux, and macOS.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending normalized.
+*.webp binary
+*.webm binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.icns binary
+*.woff  binary
+*.woff2 binary

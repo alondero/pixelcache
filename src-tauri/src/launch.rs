@@ -1,7 +1,7 @@
 //! Launch engine.
 //!
 //! This module owns the logic for turning a launch request into an actual OS
-//! process. It is deliberately split into three layers so the decision-making is
+//! process. It is deliberately split into layers so the decision-making is
 //! unit-testable without ever spawning a real process (see the PRD's
 //! "Process Launch Mocking" testing decision):
 //!
@@ -9,6 +9,14 @@
 //!    (Catalog-aware): decide *what* to launch. Pure.
 //! 2. [`build_command`] — assemble the argv into a [`Command`]. Pure-ish; no spawn.
 //! 3. [`spawn`] — the only function that touches the OS.
+//! 4. [`wait_and_restore`] — block on the child, then re-show the window on exit.
+//!
+//! The Execution Engine (PRD §3) also hides the Tauri window while a game runs
+//! and restores it when the child exits. That "hide / wait / restore" flow lives
+//! in [`launch_with`], which is generic over two injected dependencies — a
+//! [`WaitableChild`] and a [`RestorableWindow`] — so the whole orchestration
+//! (including the spawn-fail-safe ordering) is testable with fakes and never needs
+//! a real process or a live Tauri window. Both launch commands run through it.
 //!
 //! The placeholder [`launch_test_game`] (used by the "Launch Test Game" button
 //! during local dev) targets a harmless per-platform default overridable via
@@ -212,48 +220,180 @@ pub fn build_command(spec: &LaunchSpec) -> Command {
     command
 }
 
-/// Spawn the process described by `spec`, returning immediately without waiting
-/// for it to exit. This is the only function in the module with side effects.
-pub fn spawn(spec: &LaunchSpec) -> Result<LaunchResult, LaunchError> {
-    let child = build_command(spec)
+/// Spawn the process described by `spec`, returning the live child handle without
+/// waiting for it to exit. This is the only function in the module that touches
+/// the OS. Ownership of the [`Child`](std::process::Child) is handed back to the
+/// caller so the exit-watcher ([`wait_and_restore`]) can block on it later.
+pub fn spawn(spec: &LaunchSpec) -> Result<std::process::Child, LaunchError> {
+    build_command(spec)
         .spawn()
         .map_err(|source| LaunchError::Spawn {
             program: spec.program.clone(),
             source,
-        })?;
-    Ok(LaunchResult {
-        program: spec.program.clone(),
-        pid: child.id(),
-    })
+        })
+}
+
+/// A spawned child process the launch engine can block on until it exits.
+///
+/// Abstracted into a trait so [`wait_and_restore`] and [`launch_with`] can be
+/// exercised with a fake in unit tests, per the PRD's "Process Launch Mocking"
+/// rule. The real implementation is [`std::process::Child`].
+pub trait WaitableChild {
+    /// Block until the process exits. The exit status is intentionally discarded:
+    /// per issue #7 the window is restored regardless of the child's return code.
+    fn wait(&mut self) -> std::io::Result<()>;
+    /// The operating-system process id — returned to the frontend as the
+    /// [`LaunchResult`] pid, and also used when logging a wait failure.
+    fn id(&self) -> u32;
+}
+
+impl WaitableChild for std::process::Child {
+    fn wait(&mut self) -> std::io::Result<()> {
+        std::process::Child::wait(self).map(|_status| ())
+    }
+
+    fn id(&self) -> u32 {
+        std::process::Child::id(self)
+    }
+}
+
+/// A window the launch engine can hide while a game runs and re-show on exit.
+///
+/// Abstracted into a trait for the same testability reason as [`WaitableChild`]:
+/// the real implementation is Tauri's [`tauri::WebviewWindow`], but tests inject a
+/// fake that merely records the hide/show calls. Named `RestorableWindow` (not
+/// `Window`) to avoid colliding with Tauri's own [`tauri::Window`] type at use
+/// sites.
+///
+/// Failures are reported as `String` rather than a [`LaunchError`] variant on
+/// purpose: they are never propagated to a caller that matches on them — every
+/// call site only best-effort *logs* the message (a hidden/shown window is not
+/// worth failing a launch over). So there is no typed variant for anyone to
+/// consume, and the string carries no dependency on Tauri's error type. The
+/// project's "typed error enum" rule (CLAUDE.md) still governs [`LaunchError`],
+/// which models the real, matchable launch failures.
+pub trait RestorableWindow {
+    fn hide(&self) -> Result<(), String>;
+    fn show(&self) -> Result<(), String>;
+}
+
+impl RestorableWindow for tauri::WebviewWindow {
+    fn hide(&self) -> Result<(), String> {
+        tauri::WebviewWindow::hide(self).map_err(|e| e.to_string())
+    }
+
+    fn show(&self) -> Result<(), String> {
+        tauri::WebviewWindow::show(self).map_err(|e| e.to_string())
+    }
+}
+
+/// Log a best-effort side-effect failure, prefixed for grep-ability.
+///
+/// The hide / wait / show steps are all fire-and-forget: nothing downstream can
+/// act on their errors, so they are recorded here rather than propagated. Keeping
+/// the format in one place stops the `pixelcache:` prefix drifting between sites.
+fn log_if_err<E: fmt::Display>(context: &str, result: Result<(), E>) {
+    if let Err(e) = result {
+        eprintln!("pixelcache: {context}: {e}");
+    }
+}
+
+/// The exit-watcher stage: block on the child, then restore the window.
+///
+/// Runs on a background thread so it never ties up a Tauri command slot. It is
+/// deliberately dependency-injected (generic over [`WaitableChild`] +
+/// [`RestorableWindow`]) and side-effect-light so it can be unit-tested
+/// synchronously with fakes. Both a failed `wait` and a failed `show` are logged
+/// rather than propagated — there is no caller left to handle them, and the window
+/// must be re-shown on a best-effort basis no matter how the child exited.
+pub fn wait_and_restore<C: WaitableChild, W: RestorableWindow>(mut child: C, window: W) {
+    let pid = child.id();
+    log_if_err(
+        &format!("failed to wait on launched process {pid}"),
+        child.wait(),
+    );
+    log_if_err("failed to restore window after launch", window.show());
+}
+
+/// The production exit-watcher: move the child + window onto a background OS
+/// thread that blocks on the child and restores the window when it exits.
+///
+/// A plain OS thread (not `tauri::async_runtime::spawn`) because `Child::wait`
+/// blocks the whole thread; keeping it off the async runtime avoids parking a
+/// shared tokio worker for the entire game session. Injected into [`launch_with`]
+/// so tests can substitute a synchronous watcher instead.
+fn watch_on_thread<C, W>(child: C, window: W)
+where
+    C: WaitableChild + Send + 'static,
+    W: RestorableWindow + Send + 'static,
+{
+    std::thread::spawn(move || wait_and_restore(child, window));
+}
+
+/// Orchestrate a launch with the spawn-fail-safe hide/restore ordering.
+///
+/// The ordering is the crux of issue #7's acceptance criteria: the window is
+/// hidden **only after** the spawn succeeds, and the exit-watcher takes over from
+/// there. If `spawn_child` fails, the window is never touched, so a spawn failure
+/// can never leave the UI stuck in a hidden "half-state". A failed `hide` is
+/// non-fatal (logged): the process is already running, so the launch still
+/// succeeds and the eventual `show` on exit is simply a no-op.
+///
+/// `spawn_child` and `watch` are injected so the whole flow can be driven by tests
+/// with fakes; in production `watch` is [`watch_on_thread`], which moves the child
+/// + window onto a background thread running [`wait_and_restore`].
+pub fn launch_with<C, W>(
+    program: String,
+    window: W,
+    spawn_child: impl FnOnce() -> Result<C, LaunchError>,
+    watch: impl FnOnce(C, W),
+) -> Result<LaunchResult, LaunchError>
+where
+    C: WaitableChild,
+    W: RestorableWindow,
+{
+    let child = spawn_child()?;
+    let pid = child.id();
+    log_if_err("failed to hide window on launch", window.hide());
+    watch(child, window);
+    Ok(LaunchResult { program, pid })
 }
 
 /// Tauri command invoked from the frontend "Launch Test Game" button.
 ///
 /// Declared `async` so Tauri runs it on its async runtime rather than the WebView
-/// event loop. The spawn itself does not wait for the child to exit, so control
-/// returns to the UI as soon as the process is created — satisfying the "spawns
-/// asynchronously without blocking the UI" acceptance criterion. The typed
-/// [`LaunchError`] is stringified only here, at the IPC boundary.
+/// event loop. Tauri injects the invoking [`tauri::WebviewWindow`] as the `window`
+/// argument. On a successful spawn the window is hidden and a background thread
+/// owns the child until it exits, then re-shows the window — so control returns to
+/// the UI immediately (satisfying "spawns asynchronously without blocking the UI")
+/// while the game runs full-screen. The typed [`LaunchError`] is stringified only
+/// here, at the IPC boundary.
 #[tauri::command]
-pub async fn launch_test_game() -> Result<LaunchResult, String> {
+pub async fn launch_test_game(window: tauri::WebviewWindow) -> Result<LaunchResult, String> {
     let spec = resolve_from_env();
-    spawn(&spec).map_err(|e| e.to_string())
+    let program = spec.program.clone();
+    launch_with(program, window, || spawn(&spec), watch_on_thread).map_err(|e| e.to_string())
 }
 
 /// Tauri command invoked when the user clicks Play on a Release in the Game
 /// details panel. Looks the Release up in the bundled Catalog, resolves the
-/// Deck for its platform, and spawns the configured executable with the
-/// release file appended — without waiting for the child to exit.
+/// Deck for its platform, and spawns the configured executable with the release
+/// file appended. As with [`launch_test_game`], the window is hidden on a
+/// successful spawn and restored by the background exit-watcher when the game
+/// exits (issue #7). A resolution failure (unknown release, missing Deck) returns
+/// before the window is ever touched, so the UI stays visible.
 #[tauri::command]
 pub async fn launch_release(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     release_id: String,
 ) -> Result<LaunchResult, String> {
     let catalog = crate::catalog::load_bundled_catalog(&app)?;
     let vault_root = std::env::var(VAULT_DIR_ENV).ok();
     let spec = resolve_release_spec(&catalog, &release_id, vault_root.as_deref())
         .map_err(|e| e.to_string())?;
-    spawn(&spec).map_err(|e| e.to_string())
+    let program = spec.program.clone();
+    launch_with(program, window, || spawn(&spec), watch_on_thread).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -422,5 +562,188 @@ mod tests {
         assert_eq!(command.get_program(), "emu");
         let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
         assert_eq!(args, vec!["-L", "game.sfc"]);
+    }
+
+    // --- Hide / wait / restore stage (issue #7) ---------------------------------
+    //
+    // These exercise the exit-watcher and the launch orchestration entirely with
+    // fakes: no real process is spawned and no live Tauri window is created, per
+    // the PRD's "Process Launch Mocking" rule.
+
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A fake child that records whether it was waited on and can simulate a
+    /// `wait` failure.
+    struct FakeChild {
+        id: u32,
+        waited: Arc<AtomicBool>,
+        wait_fails: bool,
+    }
+
+    impl WaitableChild for FakeChild {
+        fn wait(&mut self) -> std::io::Result<()> {
+            self.waited.store(true, Ordering::SeqCst);
+            if self.wait_fails {
+                Err(std::io::Error::other("wait boom"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn id(&self) -> u32 {
+            self.id
+        }
+    }
+
+    /// A fake window that counts hide/show calls and can simulate a `hide`
+    /// failure. Counters are shared via `Arc` so assertions survive the window
+    /// being moved into the watcher.
+    #[derive(Clone)]
+    struct FakeWindow {
+        hidden: Arc<AtomicUsize>,
+        shown: Arc<AtomicUsize>,
+        hide_fails: bool,
+    }
+
+    impl FakeWindow {
+        fn new() -> Self {
+            FakeWindow {
+                hidden: Arc::new(AtomicUsize::new(0)),
+                shown: Arc::new(AtomicUsize::new(0)),
+                hide_fails: false,
+            }
+        }
+    }
+
+    impl RestorableWindow for FakeWindow {
+        fn hide(&self) -> Result<(), String> {
+            self.hidden.fetch_add(1, Ordering::SeqCst);
+            if self.hide_fails {
+                Err("hide boom".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn show(&self) -> Result<(), String> {
+            self.shown.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn wait_and_restore_shows_window_after_child_exits() {
+        let waited = Arc::new(AtomicBool::new(false));
+        let child = FakeChild {
+            id: 42,
+            waited: waited.clone(),
+            wait_fails: false,
+        };
+        let window = FakeWindow::new();
+        let shown = window.shown.clone();
+
+        wait_and_restore(child, window);
+
+        assert!(waited.load(Ordering::SeqCst), "child was not waited on");
+        assert_eq!(shown.load(Ordering::SeqCst), 1, "window was not re-shown");
+    }
+
+    #[test]
+    fn wait_and_restore_still_shows_window_when_wait_fails() {
+        // Even if we can't observe the child's exit cleanly, the window must come
+        // back — a stuck-hidden window is the worst outcome.
+        let child = FakeChild {
+            id: 7,
+            waited: Arc::new(AtomicBool::new(false)),
+            wait_fails: true,
+        };
+        let window = FakeWindow::new();
+        let shown = window.shown.clone();
+
+        wait_and_restore(child, window);
+
+        assert_eq!(shown.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn successful_launch_hides_window_then_watches() {
+        let window = FakeWindow::new();
+        let hidden = window.hidden.clone();
+        let shown = window.shown.clone();
+
+        let result = launch_with(
+            "emu".to_string(),
+            window,
+            || {
+                Ok(FakeChild {
+                    id: 1234,
+                    waited: Arc::new(AtomicBool::new(false)),
+                    wait_fails: false,
+                })
+            },
+            // Run the watcher synchronously so the test can assert the restore.
+            wait_and_restore,
+        )
+        .expect("launch should succeed");
+
+        assert_eq!(result.program, "emu");
+        assert_eq!(result.pid, 1234);
+        assert_eq!(hidden.load(Ordering::SeqCst), 1, "window was not hidden");
+        assert_eq!(shown.load(Ordering::SeqCst), 1, "window was not restored");
+    }
+
+    #[test]
+    fn spawn_failure_leaves_window_visible() {
+        let window = FakeWindow::new();
+        let hidden = window.hidden.clone();
+        let shown = window.shown.clone();
+        let watched = Arc::new(AtomicBool::new(false));
+        let watched_probe = watched.clone();
+
+        let result = launch_with::<FakeChild, _>(
+            "emu".to_string(),
+            window,
+            || {
+                Err(LaunchError::Spawn {
+                    program: "emu".to_string(),
+                    source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+                })
+            },
+            |_child, _window| watched_probe.store(true, Ordering::SeqCst),
+        );
+
+        assert!(result.is_err(), "launch should surface the spawn failure");
+        assert_eq!(hidden.load(Ordering::SeqCst), 0, "window must stay visible");
+        assert_eq!(shown.load(Ordering::SeqCst), 0);
+        assert!(
+            !watched.load(Ordering::SeqCst),
+            "no watcher should start when spawn fails"
+        );
+    }
+
+    #[test]
+    fn launch_succeeds_even_when_hide_fails() {
+        // A failed hide is non-fatal: the process is already running, so the
+        // launch still reports success and the watcher still restores on exit.
+        let mut window = FakeWindow::new();
+        window.hide_fails = true;
+        let shown = window.shown.clone();
+
+        let result = launch_with(
+            "emu".to_string(),
+            window,
+            || {
+                Ok(FakeChild {
+                    id: 99,
+                    waited: Arc::new(AtomicBool::new(false)),
+                    wait_fails: false,
+                })
+            },
+            wait_and_restore,
+        );
+
+        assert!(result.is_ok(), "hide failure should not fail the launch");
+        assert_eq!(shown.load(Ordering::SeqCst), 1);
     }
 }
