@@ -1,5 +1,6 @@
 mod catalog;
 mod launch;
+mod scanner;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -8,7 +9,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             launch::launch_test_game,
             launch::launch_release,
-            catalog::load_catalog
+            catalog::load_catalog,
+            scanner::scan_vault
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

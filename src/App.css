@@ -112,6 +112,13 @@
   font-size: 0.95rem;
 }
 
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+}
+
 .launch-button {
   padding: 0.9rem 2.4rem;
   font-size: 1.05rem;
@@ -126,6 +133,16 @@
     transform 0.12s ease,
     box-shadow 0.12s ease,
     filter 0.12s ease;
+}
+
+/* Secondary action (Rescan Vault): quieter glass fill, same focus treatment. */
+.launch-button.secondary {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
+.launch-button.secondary:hover:not(:disabled) {
+  box-shadow: 0 6px 24px rgba(255, 255, 255, 0.12);
 }
 
 .launch-button:hover:not(:disabled) {

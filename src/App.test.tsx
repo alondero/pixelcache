@@ -59,13 +59,31 @@ const sampleCatalog: Catalog = {
   decks: [],
 };
 
+const scannedCatalog: Catalog = {
+  games: [{ id: "tetris", primaryReleaseId: "tetris-usa", relations: [] }],
+  releases: [
+    {
+      id: "tetris-usa",
+      gameId: "tetris",
+      title: "Tetris",
+      region: "USA",
+      platform: "nes",
+      releaseType: "retail",
+      filePath: "Tetris (USA).nes",
+    },
+  ],
+  decks: [],
+};
+
 function mockInvoke({
   catalog = () => Promise.resolve(sampleCatalog),
   launch = () => Promise.resolve({ program: "notepad.exe", pid: 4242 }),
+  scan = () => Promise.resolve(scannedCatalog),
   launchRelease = () => Promise.resolve({ program: "mupen64plus", pid: 777 }),
 }: {
   catalog?: () => Promise<unknown>;
   launch?: () => Promise<unknown>;
+  scan?: () => Promise<unknown>;
   launchRelease?: () => Promise<unknown>;
 } = {}) {
   // Promises are constructed lazily (inside the mock implementation, not as
@@ -75,6 +93,7 @@ function mockInvoke({
   invoke.mockImplementation((command: string) => {
     if (command === "load_catalog") return catalog();
     if (command === "launch_test_game") return launch();
+    if (command === "scan_vault") return scan();
     if (command === "launch_release") return launchRelease();
     throw new Error(`unexpected invoke command: ${command}`);
   });
@@ -170,10 +189,50 @@ describe("App", () => {
       name: /launch test game/i,
     });
 
-    // Card 0 -> card 1 -> right wraps to the last item in the roving focus
-    // loop, which is the Launch button.
+    // Card 0 -> card 1 -> Launch button (index 2), the item after the last
+    // game card in the roving focus loop.
     await user.keyboard("{ArrowRight}{ArrowRight}");
     expect(launchButton).toHaveFocus();
+  });
+
+  it("renders the Rescan Vault button", async () => {
+    mockInvoke();
+    render(<App />);
+    expect(
+      await screen.findByRole("button", { name: /rescan vault/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("invokes scan_vault and refreshes the grid with the returned catalog", async () => {
+    mockInvoke();
+    render(<App />);
+
+    // The initially-loaded catalog shows Star Fox 64; scanning replaces it.
+    await screen.findByText("Star Fox 64");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /rescan vault/i }),
+    );
+
+    expect(invoke).toHaveBeenCalledWith("scan_vault");
+    expect(await screen.findByText("Tetris")).toBeInTheDocument();
+    expect(screen.queryByText("Star Fox 64")).not.toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /scan complete: 1 game found/i,
+    );
+  });
+
+  it("surfaces an error message when the scan fails", async () => {
+    mockInvoke({ scan: () => Promise.reject("no vault directory provided") });
+    render(<App />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /rescan vault/i }),
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /scan failed: no vault directory provided/i,
+    );
   });
 
   it("opens a details panel listing the game's peer releases when a card is selected", async () => {
