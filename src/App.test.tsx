@@ -51,22 +51,38 @@ const sampleCatalog: Catalog = {
     },
   ],
   decks: [],
+  playlists: [
+    {
+      id: "favourites",
+      name: "Favourites",
+      releaseIds: ["lylat-wars-pal", "metroid-ntsc"],
+    },
+    {
+      id: "n64-only",
+      name: "N64 Only",
+      releaseIds: ["star-fox-64-ntsc"],
+    },
+  ],
 };
 
 function mockInvoke({
   catalog = () => Promise.resolve(sampleCatalog),
   launch = () => Promise.resolve({ program: "notepad.exe", pid: 4242 }),
+  launchRelease = () => Promise.resolve({ program: "mupen64plus", pid: 777 }),
 }: {
   catalog?: () => Promise<unknown>;
   launch?: () => Promise<unknown>;
+  launchRelease?: (releaseId: string) => Promise<unknown>;
 } = {}) {
   // Promises are constructed lazily (inside the mock implementation, not as
   // default-parameter values) so a rejection isn't created until `invoke` is
   // actually called with that command — otherwise vitest reports it as an
   // unhandled rejection even though the test does eventually await it.
-  invoke.mockImplementation((command: string) => {
+  invoke.mockImplementation((command: string, args?: { releaseId: string }) => {
     if (command === "load_catalog") return catalog();
     if (command === "launch_test_game") return launch();
+    if (command === "launch_release")
+      return launchRelease(args?.releaseId ?? "");
     throw new Error(`unexpected invoke command: ${command}`);
   });
 }
@@ -106,11 +122,11 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the Launch button", async () => {
+  it("renders the Launch button once the catalog has loaded", async () => {
     mockInvoke();
     render(<App />);
     expect(
-      screen.getByRole("button", { name: /launch test game/i }),
+      await screen.findByRole("button", { name: /launch test game/i }),
     ).toBeInTheDocument();
   });
 
@@ -119,7 +135,7 @@ describe("App", () => {
     render(<App />);
 
     await userEvent.click(
-      screen.getByRole("button", { name: /launch test game/i }),
+      await screen.findByRole("button", { name: /launch test game/i }),
     );
 
     expect(invoke).toHaveBeenCalledWith("launch_test_game");
@@ -130,7 +146,7 @@ describe("App", () => {
     render(<App />);
 
     await userEvent.click(
-      screen.getByRole("button", { name: /launch test game/i }),
+      await screen.findByRole("button", { name: /launch test game/i }),
     );
 
     expect(await screen.findByRole("status")).toHaveTextContent(
@@ -143,7 +159,7 @@ describe("App", () => {
     render(<App />);
 
     await userEvent.click(
-      screen.getByRole("button", { name: /launch test game/i }),
+      await screen.findByRole("button", { name: /launch test game/i }),
     );
 
     expect(await screen.findByRole("status")).toHaveTextContent(
@@ -179,6 +195,76 @@ describe("App", () => {
     expect(firstCard.closest("button")).not.toHaveClass("is-focused");
     expect(screen.getByText("Metroid").closest("button")).toHaveClass(
       "is-focused",
+    );
+  });
+
+  it("renders a Playlists tab and switches to it when selected", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /playlists/i }));
+
+    // The default (first) playlist is selected, showing its releases.
+    expect(screen.getByRole("tab", { name: /favourites/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText("Lylat Wars")).toBeInTheDocument();
+    expect(screen.getByText("Metroid")).toBeInTheDocument();
+  });
+
+  it("lets the user select between different playlist collections", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /playlists/i }));
+
+    // Favourites (default) does not include Star Fox 64 NTSC...
+    expect(screen.queryByText("Star Fox 64")).not.toBeInTheDocument();
+
+    // ...selecting "N64 Only" swaps the release list.
+    await user.click(screen.getByRole("tab", { name: /n64 only/i }));
+    expect(screen.getByText("Star Fox 64")).toBeInTheDocument();
+    expect(screen.queryByText("Lylat Wars")).not.toBeInTheDocument();
+  });
+
+  it("launches a release from a playlist via the launch_release command", async () => {
+    const launchRelease = vi
+      .fn()
+      .mockResolvedValue({ program: "mupen64plus", pid: 777 });
+    mockInvoke({ launchRelease });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /playlists/i }));
+    await user.click(screen.getByRole("gridcell", { name: /lylat wars/i }));
+
+    expect(invoke).toHaveBeenCalledWith("launch_release", {
+      releaseId: "lylat-wars-pal",
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /launched mupen64plus \(pid 777\)/i,
+    );
+  });
+
+  it("surfaces an error when launching a release from a playlist fails", async () => {
+    mockInvoke({
+      launchRelease: () => Promise.reject("no deck configured for platform"),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /playlists/i }));
+    await user.click(screen.getByRole("gridcell", { name: /lylat wars/i }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /launch failed: no deck configured for platform/i,
     );
   });
 });

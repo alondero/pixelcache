@@ -44,6 +44,7 @@ function catalog(): Catalog {
       },
     ],
     decks: [],
+    playlists: [],
   };
 }
 
@@ -72,6 +73,7 @@ describe("gameCardInfos", () => {
       ],
       releases: [],
       decks: [],
+      playlists: [],
     };
     const cards = gameCardInfos(withDanglingPrimary);
     expect(cards).toEqual([
@@ -84,6 +86,8 @@ describe("gameCardInfos", () => {
   });
 
   it("returns an empty list for an empty catalog", () => {
-    expect(gameCardInfos({ games: [], releases: [], decks: [] })).toEqual([]);
+    expect(
+      gameCardInfos({ games: [], releases: [], decks: [], playlists: [] }),
+    ).toEqual([]);
   });
 });

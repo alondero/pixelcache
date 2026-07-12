@@ -1,7 +1,7 @@
-import type { CSSProperties, RefObject } from "react";
+import type { RefObject } from "react";
 import type { Catalog } from "./catalog";
 import { gameCardInfos } from "./catalogView";
-import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
+import { GRID_CSS_VARS } from "./gridLayout";
 
 interface GameGridProps {
   catalog: Catalog;
@@ -9,13 +9,6 @@ interface GameGridProps {
   focusedIndex: number;
   registerItemRef: (index: number) => (el: HTMLElement | null) => void;
 }
-
-// Forwarded as CSS custom properties so `.game-grid` in App.css always
-// renders the same card size `useGridFocus` measured columns against.
-const gridStyle = {
-  "--card-min-width": `${CARD_MIN_WIDTH_PX}px`,
-  "--card-gap": `${CARD_GAP_PX}px`,
-} as CSSProperties;
 
 /** Responsive CSS grid of Game cards, focus-navigable via `useGridFocus`. */
 function GameGrid({
@@ -29,7 +22,7 @@ function GameGrid({
   return (
     <div
       className="game-grid"
-      style={gridStyle}
+      style={GRID_CSS_VARS}
       ref={containerRef as RefObject<HTMLDivElement>}
       role="grid"
       aria-label="Game catalog"
