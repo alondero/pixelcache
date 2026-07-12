@@ -1,4 +1,10 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -181,6 +187,77 @@ describe("App", () => {
     // loop, which is the Launch button.
     await user.keyboard("{ArrowRight}{ArrowRight}");
     expect(launchButton).toHaveFocus();
+  });
+
+  it("opens a details panel listing the game's peer releases when a card is selected", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      (await screen.findByText("Star Fox 64")).closest("button")!,
+    );
+
+    const panel = await screen.findByRole("dialog", { name: /star fox 64/i });
+    expect(within(panel).getByText("Lylat Wars")).toBeInTheDocument();
+    expect(
+      within(panel).getAllByRole("button", { name: /^play /i }),
+    ).toHaveLength(2);
+  });
+
+  it("invokes launch_release with the release id when Play is clicked", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      (await screen.findByText("Star Fox 64")).closest("button")!,
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /play lylat wars/i }),
+    );
+
+    expect(invoke).toHaveBeenCalledWith("launch_release", {
+      releaseId: "lylat-wars-pal",
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /launched mupen64plus \(pid 777\)/i,
+    );
+  });
+
+  it("surfaces launch_release failures in the status line", async () => {
+    mockInvoke({
+      launchRelease: () =>
+        Promise.reject("no deck configured for platform 'n64'"),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      (await screen.findByText("Star Fox 64")).closest("button")!,
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /play lylat wars/i }),
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /launch failed: no deck configured/i,
+    );
+  });
+
+  it("closes the details panel with Escape and returns focus to the grid", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    const card = (await screen.findByText("Star Fox 64")).closest("button")!;
+    await user.click(card);
+    await screen.findByRole("dialog");
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(card).toHaveFocus());
   });
 
   it("applies a state-driven focus class, not just :focus-visible, so gamepad navigation stays visible", async () => {

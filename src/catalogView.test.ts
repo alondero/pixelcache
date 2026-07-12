@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { gameCardInfos } from "./catalogView";
+import {
+  gameCardInfos,
+  mediaUrl,
+  peerReleases,
+  primaryReleaseTitle,
+} from "./catalogView";
 import type { Catalog } from "./catalog";
 
 function catalog(): Catalog {
@@ -89,5 +94,59 @@ describe("gameCardInfos", () => {
     expect(
       gameCardInfos({ games: [], releases: [], decks: [], playlists: [] }),
     ).toEqual([]);
+  });
+});
+
+describe("peerReleases", () => {
+  it("lists a game's releases with the primary release first", () => {
+    const data = catalog();
+    // Make the *second* catalog entry the primary to prove reordering happens.
+    data.games[0].primaryReleaseId = "lylat-wars-pal";
+
+    const releases = peerReleases(data, data.games[0]);
+
+    expect(releases.map((r) => r.id)).toEqual([
+      "lylat-wars-pal",
+      "star-fox-64-ntsc",
+    ]);
+  });
+
+  it("keeps catalog order when the primary release is missing", () => {
+    const data = catalog();
+    data.games[0].primaryReleaseId = "does-not-exist";
+
+    const releases = peerReleases(data, data.games[0]);
+
+    expect(releases.map((r) => r.id)).toEqual([
+      "star-fox-64-ntsc",
+      "lylat-wars-pal",
+    ]);
+  });
+
+  it("only includes releases belonging to the given game", () => {
+    const data = catalog();
+    const releases = peerReleases(data, data.games[1]);
+    expect(releases.map((r) => r.id)).toEqual(["metroid-ntsc"]);
+  });
+});
+
+describe("mediaUrl", () => {
+  it("resolves a catalog-relative media path under the media root", () => {
+    expect(mediaUrl("star-fox-64/preview.webm")).toBe(
+      "media/star-fox-64/preview.webm",
+    );
+  });
+});
+
+describe("primaryReleaseTitle", () => {
+  it("returns the primary release's title", () => {
+    const data = catalog();
+    expect(primaryReleaseTitle(data, data.games[0])).toBe("Star Fox 64");
+  });
+
+  it("falls back to the game id when the primary release is missing", () => {
+    const data = catalog();
+    data.games[0].primaryReleaseId = "does-not-exist";
+    expect(primaryReleaseTitle(data, data.games[0])).toBe("star-fox-64");
   });
 });

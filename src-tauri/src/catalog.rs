@@ -150,19 +150,6 @@ impl Catalog {
     pub fn from_json(json: &str) -> Result<Catalog, serde_json::Error> {
         serde_json::from_str(json)
     }
-
-    /// Find the [`Release`] with the given id, if present.
-    pub fn find_release(&self, release_id: &str) -> Option<&Release> {
-        self.releases.iter().find(|r| r.id == release_id)
-    }
-
-    /// Find the [`Deck`] that runs the given platform, if one is configured.
-    ///
-    /// A Release names its `platform`; launching it means finding the Deck that
-    /// maps that platform to a local executable. The first matching Deck wins.
-    pub fn find_deck_for_platform(&self, platform: &str) -> Option<&Deck> {
-        self.decks.iter().find(|d| d.platform == platform)
-    }
 }
 
 /// Read and parse the catalog at `path`, the only function in this module that
@@ -182,9 +169,10 @@ pub fn load_catalog_from_path(path: &Path) -> Result<Catalog, CatalogError> {
 /// resource directory (see the `bundle.resources` mapping in `tauri.conf.json`).
 const CATALOG_RESOURCE_FILE: &str = "catalog.json";
 
-/// Tauri command invoked once on frontend startup to load the Catalog.
-#[tauri::command]
-pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
+/// Load the catalog bundled with the app, resolving it from the resource
+/// directory. Shared by the `load_catalog` command and the launch engine
+/// (which re-reads the catalog to resolve a Release into a Deck command).
+pub fn load_bundled_catalog(app: &tauri::AppHandle) -> Result<Catalog, String> {
     use tauri::path::BaseDirectory;
     use tauri::Manager;
 
@@ -193,6 +181,12 @@ pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
         .resolve(CATALOG_RESOURCE_FILE, BaseDirectory::Resource)
         .map_err(|e| format!("failed to resolve catalog resource path: {e}"))?;
     load_catalog_from_path(&path).map_err(|e| e.to_string())
+}
+
+/// Tauri command invoked once on frontend startup to load the Catalog.
+#[tauri::command]
+pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
+    load_bundled_catalog(&app)
 }
 
 #[cfg(test)]
@@ -322,22 +316,6 @@ mod tests {
             Catalog::from_json(r#"{ "playlists": [{ "id": "empty", "name": "Empty" }] }"#)
                 .expect("playlist without releaseIds is valid");
         assert!(catalog.playlists[0].release_ids.is_empty());
-    }
-
-    #[test]
-    fn find_release_locates_a_release_by_id() {
-        let catalog = Catalog::from_json(sample_json()).expect("valid catalog json");
-        let release = catalog.find_release("lylat-wars-pal");
-        assert_eq!(release.map(|r| r.title.as_str()), Some("Lylat Wars"));
-        assert!(catalog.find_release("no-such-release").is_none());
-    }
-
-    #[test]
-    fn find_deck_for_platform_matches_on_platform() {
-        let catalog = Catalog::from_json(sample_json()).expect("valid catalog json");
-        let deck = catalog.find_deck_for_platform("n64");
-        assert_eq!(deck.map(|d| d.id.as_str()), Some("n64-mupen"));
-        assert!(catalog.find_deck_for_platform("gamecube").is_none());
     }
 
     #[test]

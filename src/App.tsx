@@ -39,6 +39,9 @@ function App() {
     };
   }, []);
 
+  const catalog =
+    catalogStatus.kind === "loaded" ? catalogStatus.catalog : null;
+
   return (
     <main className="app">
       <div className="glass-card">
@@ -60,11 +63,9 @@ function App() {
           ))}
         </nav>
 
-        {catalogStatus.kind === "loaded" && activeTab === "games" && (
-          <GamesView catalog={catalogStatus.catalog} />
-        )}
-        {catalogStatus.kind === "loaded" && activeTab === "playlists" && (
-          <PlaylistsView catalog={catalogStatus.catalog} />
+        {catalog && activeTab === "games" && <GamesView catalog={catalog} />}
+        {catalog && activeTab === "playlists" && (
+          <PlaylistsView catalog={catalog} />
         )}
         {catalogStatus.kind === "error" && (
           <p className="status" role="alert">
