@@ -79,3 +79,28 @@ npm run tauri dev
 
 Arguments are whitespace-separated. This override is a temporary dev convenience;
 it will be superseded by the Catalog/Deck configuration in a later issue.
+
+## Launching a Release from the details panel (issue #3)
+
+Clicking Play on a Release in the Game details panel runs the Deck configured
+for the release's platform: `executablePath` + `arguments` + the release's
+`filePath`. Since the Deck entries in the mock catalog name bare executables
+(`mupen64plus`, `snes9x`, `mesen`), launches only succeed if those are on your
+`PATH`. Release `filePath`s are resolved against the Vault root when one is set:
+
+```bash
+# Windows (PowerShell)
+$env:PIXELCACHE_VAULT_DIR = "D:\roms"
+npm run tauri dev
+```
+
+When unset, the `filePath` is passed to the Deck executable as-is.
+
+## Preview media
+
+Release `media.video` / `media.image` paths are catalog-relative and served
+from the frontend's `media/` root — in dev that is `public/media/`. The repo
+ships tiny generated placeholder files there (an ffmpeg test-pattern `.webm`
+and gradient `.webp`) so the preview pane demonstrably works; replace them
+with real captures by dropping files at the same paths. A Tauri asset protocol
+will take over when configurable Vaults land (post-MVP).
