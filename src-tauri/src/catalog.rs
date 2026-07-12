@@ -165,20 +165,32 @@ pub fn load_catalog_from_path(path: &Path) -> Result<Catalog, CatalogError> {
     })
 }
 
-/// Filename of the bundled mock catalog, resolved relative to the app's
-/// resource directory (see the `bundle.resources` mapping in `tauri.conf.json`).
-const CATALOG_RESOURCE_FILE: &str = "catalog.json";
+/// Filename of the catalog document, used both for the bundled mock (resolved
+/// against the app's resource directory per the `bundle.resources` mapping in
+/// `tauri.conf.json`) and for the generated copy the Import Scanner writes to
+/// the app data directory.
+pub const CATALOG_FILE_NAME: &str = "catalog.json";
 
-/// Load the catalog bundled with the app, resolving it from the resource
-/// directory. Shared by the `load_catalog` command and the launch engine
-/// (which re-reads the catalog to resolve a Release into a Deck command).
+/// Load the catalog, preferring a scanner-generated copy in the app data
+/// directory (issue #4) and falling back to the bundled mock resource when no
+/// generated catalog exists yet — e.g. on a fresh install before the first
+/// Vault scan. Shared by the `load_catalog` command and the launch engine
+/// (which re-reads the catalog to resolve a Release into a Deck command), so
+/// both see the same catalog the user is actually viewing.
 pub fn load_bundled_catalog(app: &tauri::AppHandle) -> Result<Catalog, String> {
     use tauri::path::BaseDirectory;
     use tauri::Manager;
 
+    if let Ok(generated) = app.path().app_data_dir() {
+        let generated = generated.join(CATALOG_FILE_NAME);
+        if generated.is_file() {
+            return load_catalog_from_path(&generated).map_err(|e| e.to_string());
+        }
+    }
+
     let path = app
         .path()
-        .resolve(CATALOG_RESOURCE_FILE, BaseDirectory::Resource)
+        .resolve(CATALOG_FILE_NAME, BaseDirectory::Resource)
         .map_err(|e| format!("failed to resolve catalog resource path: {e}"))?;
     load_catalog_from_path(&path).map_err(|e| e.to_string())
 }

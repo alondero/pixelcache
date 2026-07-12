@@ -14,35 +14,46 @@ type LaunchStatus =
   | { kind: "launched"; result: LaunchResult }
   | { kind: "error"; message: string };
 
+type ScanStatus =
+  | { kind: "idle" }
+  | { kind: "scanning" }
+  | { kind: "scanned"; gameCount: number }
+  | { kind: "error"; message: string };
+
 interface GamesViewProps {
   catalog: Catalog;
+  /** Called with a freshly scanned Catalog so the whole app (both tabs) refreshes. */
+  onCatalogChange: (catalog: Catalog) => void;
 }
 
 /**
  * The default "Games" screen: the grid of canonical Game cards, the tracer
- * "Launch Test Game" button, and the Game details panel (peer releases + Play).
+ * "Launch Test Game" and "Rescan Vault" action buttons, and the Game details
+ * panel (peer releases + Play).
  *
  * Owns its own `useGridFocus` so that only the mounted view polls the gamepad
  * (see `App` — views are mounted one at a time to avoid two focus loops
  * racing). The grid loop is additionally suspended while the details panel is
  * open, since the panel runs its own focus loop.
  */
-function GamesView({ catalog }: GamesViewProps) {
+function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus>({
     kind: "idle",
   });
+  const [scanStatus, setScanStatus] = useState<ScanStatus>({ kind: "idle" });
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
 
   const games = catalog.games;
   const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
-  // The roving focus loop covers every Game card plus the Launch button, so
-  // arrow keys/D-pad can always reach it regardless of catalog size. It is
+  // The roving focus loop covers every Game card plus the two action buttons,
+  // so arrow keys/D-pad can always reach them regardless of catalog size. It is
   // suspended while the details panel is open — the panel runs its own focus
   // loop, and only one may listen to the gamepad at a time.
   const launchButtonIndex = games.length;
+  const rescanButtonIndex = launchButtonIndex + 1;
   const { containerRef, focusedIndex, registerItemRef, focusItem } =
     useGridFocus({
-      itemCount: launchButtonIndex + 1,
+      itemCount: rescanButtonIndex + 1,
       itemWidth: CARD_MIN_WIDTH_PX,
       gap: CARD_GAP_PX,
       enabled: selectedGame === null,
@@ -55,6 +66,20 @@ function GamesView({ catalog }: GamesViewProps) {
       setLaunchStatus({ kind: "launched", result });
     } catch (error) {
       setLaunchStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  // Rescan the Vault: the Rust `scan_vault` command regenerates catalog.json
+  // and returns the fresh Catalog, which we hand back to `App` so state (and
+  // both tabs' views) refresh without an app restart.
+  async function rescanVault() {
+    setScanStatus({ kind: "scanning" });
+    try {
+      const scanned = await invoke<Catalog>("scan_vault");
+      onCatalogChange(scanned);
+      setScanStatus({ kind: "scanned", gameCount: scanned.games.length });
+    } catch (error) {
+      setScanStatus({ kind: "error", message: String(error) });
     }
   }
 
@@ -88,22 +113,40 @@ function GamesView({ catalog }: GamesViewProps) {
         onSelectGame={setSelectedGameId}
       />
 
-      <button
-        type="button"
-        className={`launch-button${focusedIndex === launchButtonIndex ? " is-focused" : ""}`}
-        onClick={launchTestGame}
-        disabled={launchStatus.kind === "launching"}
-        ref={registerItemRef(launchButtonIndex)}
-        tabIndex={focusedIndex === launchButtonIndex ? 0 : -1}
-      >
-        {launchStatus.kind === "launching" ? "Launching…" : "Launch Test Game"}
-      </button>
+      <div className="actions">
+        <button
+          type="button"
+          className={`launch-button${focusedIndex === launchButtonIndex ? " is-focused" : ""}`}
+          onClick={launchTestGame}
+          disabled={launchStatus.kind === "launching"}
+          ref={registerItemRef(launchButtonIndex)}
+          tabIndex={focusedIndex === launchButtonIndex ? 0 : -1}
+        >
+          {launchStatus.kind === "launching"
+            ? "Launching…"
+            : "Launch Test Game"}
+        </button>
+
+        <button
+          type="button"
+          className={`launch-button secondary${focusedIndex === rescanButtonIndex ? " is-focused" : ""}`}
+          onClick={rescanVault}
+          disabled={scanStatus.kind === "scanning"}
+          ref={registerItemRef(rescanButtonIndex)}
+          tabIndex={focusedIndex === rescanButtonIndex ? 0 : -1}
+        >
+          {scanStatus.kind === "scanning" ? "Scanning…" : "Rescan Vault"}
+        </button>
+      </div>
 
       <p className="status" role="status" aria-live="polite">
         {launchStatus.kind === "launched" &&
           `Launched ${launchStatus.result.program} (pid ${launchStatus.result.pid})`}
         {launchStatus.kind === "error" &&
           `Launch failed: ${launchStatus.message}`}
+        {scanStatus.kind === "scanned" &&
+          `Scan complete: ${scanStatus.gameCount} game${scanStatus.gameCount === 1 ? "" : "s"} found`}
+        {scanStatus.kind === "error" && `Scan failed: ${scanStatus.message}`}
       </p>
 
       {selectedGame && (

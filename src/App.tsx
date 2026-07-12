@@ -63,7 +63,14 @@ function App() {
           ))}
         </nav>
 
-        {catalog && activeTab === "games" && <GamesView catalog={catalog} />}
+        {catalog && activeTab === "games" && (
+          <GamesView
+            catalog={catalog}
+            onCatalogChange={(next) =>
+              setCatalogStatus({ kind: "loaded", catalog: next })
+            }
+          />
+        )}
         {catalog && activeTab === "playlists" && (
           <PlaylistsView catalog={catalog} />
         )}
