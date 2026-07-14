@@ -33,5 +33,5 @@ The centralized master directory containing all Game, Release, Deck, and Playlis
 _Avoid_: Database, Config File
 
 **Vault**:
-A storage location (local directory for MVP, remote S3/SFTP post-MVP) that hosts the physical files defined in the Asset Manifests.
-_Avoid_: Repository, Server, Host
+A **platform-scoped** storage location (local directory for MVP, remote S3/SFTP post-MVP) that holds the physical files for a single platform's Releases — the folder where, say, all your SNES games live. A collection has **one Vault per platform** (occasionally several), not one Vault for the whole library; the Import Scanner crawls each Vault for files matching its pattern and adds the Releases it finds. Because a Vault declares its platform, a Release can also be added by hand from a location outside any Vault. See [docs/adr/0004-per-platform-vaults.md](file:///F:/src/pixelcache/docs/adr/0004-per-platform-vaults.md).
+_Avoid_: Repository, Server, Host, Library (the whole collection)

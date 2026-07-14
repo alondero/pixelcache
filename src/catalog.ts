@@ -22,6 +22,12 @@ export interface Release {
   revision?: string;
   releaseType: ReleaseType;
   publisher?: string;
+  /**
+   * The Vault this Release was discovered in, if any. When set, `filePath`
+   * resolves relative to that Vault's `path`; when absent the Release was added
+   * manually and `filePath` is used as-is.
+   */
+  vaultId?: string;
   filePath: string;
   media?: Media;
 }
@@ -55,12 +61,29 @@ export interface Playlist {
 }
 
 /**
- * The centralized master directory of all Game, Release, Deck, and Playlist
- * definitions.
+ * A platform-scoped storage location the Import Scanner crawls for Releases.
+ * A collection has one Vault per platform (occasionally several), not one Vault
+ * for the whole library.
+ */
+export interface Vault {
+  id: string;
+  platform: string;
+  path: string;
+  /**
+   * Optional override for which files count as ROMs: a comma/space-separated
+   * list of extensions. When absent, the platform's default extensions apply.
+   */
+  pattern?: string;
+}
+
+/**
+ * The centralized master directory of all Game, Release, Deck, Playlist, and
+ * Vault definitions.
  */
 export interface Catalog {
   games: Game[];
   releases: Release[];
   decks: Deck[];
   playlists: Playlist[];
+  vaults?: Vault[];
 }

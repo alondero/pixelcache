@@ -37,9 +37,11 @@ pub const LAUNCH_CMD_ENV: &str = "PIXELCACHE_LAUNCH_CMD";
 /// Arguments are whitespace-separated (sufficient for the tracer bullet; the
 /// real Deck schema carries a structured `arguments: Vec<String>`).
 pub const LAUNCH_ARGS_ENV: &str = "PIXELCACHE_LAUNCH_ARGS";
-/// Environment variable pointing at the local Vault root directory. Release
-/// `filePath`s are resolved relative to it; when unset, they are passed to the
-/// Deck executable as-is (relative to the process working directory).
+/// Environment variable naming a fallback Vault root directory for Releases that
+/// have no `vault_id` (manual additions). A Release discovered by a scan resolves
+/// its `filePath` against its own [`crate::catalog::Vault`]; only manual Releases
+/// consult this. When unset, such `filePath`s are passed to the Deck executable
+/// as-is (relative to the process working directory).
 pub const VAULT_DIR_ENV: &str = "PIXELCACHE_VAULT_DIR";
 
 /// A resolved decision about what to launch: the executable and its arguments.
@@ -169,8 +171,13 @@ fn resolve_from_env() -> LaunchSpec {
 
 /// Decide what to launch for a specific Release: the Deck configured for the
 /// release's platform provides the program and base arguments, and the
-/// release's `filePath` — resolved against `vault_root` when one is set — is
-/// appended as the final argument.
+/// release's `filePath` — resolved against the Vault it came from — is appended
+/// as the final argument.
+///
+/// A Release discovered by a scan carries a `vault_id`; its `filePath` resolves
+/// against that [`crate::catalog::Vault`]'s `path`. A manual Release (no
+/// `vault_id`) falls back to `fallback_root` (the [`VAULT_DIR_ENV`] override),
+/// and failing that is passed through as-is.
 ///
 /// Pure over its inputs so every failure mode (unknown release, missing deck)
 /// and the exact argv ordering are unit-testable without spawning anything,
@@ -178,7 +185,7 @@ fn resolve_from_env() -> LaunchSpec {
 pub fn resolve_release_spec(
     catalog: &Catalog,
     release_id: &str,
-    vault_root: Option<&str>,
+    fallback_root: Option<&str>,
 ) -> Result<LaunchSpec, LaunchError> {
     let release = catalog
         .releases
@@ -195,6 +202,15 @@ pub fn resolve_release_spec(
         .ok_or_else(|| LaunchError::NoDeckForPlatform {
             platform: release.platform.clone(),
         })?;
+
+    // Prefer the Release's own Vault; fall back to the env override for manual
+    // Releases that belong to no Vault.
+    let vault_root = release
+        .vault_id
+        .as_deref()
+        .and_then(|id| catalog.vaults.iter().find(|v| v.id == id))
+        .map(|v| v.path.as_str())
+        .or(fallback_root);
 
     let rom_path = match vault_root {
         Some(root) if !root.trim().is_empty() => Path::new(root.trim())
@@ -534,6 +550,52 @@ mod tests {
         let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("   "))
             .expect("release resolves");
         assert_eq!(spec.args.last().unwrap(), "star-fox-64/ntsc.z64");
+    }
+
+    /// A catalog whose n64 Release belongs to a Vault, exercising per-Vault
+    /// `filePath` resolution.
+    fn vault_catalog() -> Catalog {
+        crate::catalog::Catalog::from_json(
+            r#"{
+                "releases": [
+                    {
+                        "id": "star-fox-64-ntsc", "gameId": "star-fox-64",
+                        "title": "Star Fox 64", "platform": "n64",
+                        "releaseType": "retail", "vaultId": "n64-vault",
+                        "filePath": "star-fox-64/ntsc.z64"
+                    }
+                ],
+                "decks": [
+                    {"id": "n64-mupen", "platform": "n64",
+                     "executablePath": "mupen64plus", "arguments": ["--fullscreen"]}
+                ],
+                "vaults": [
+                    {"id": "n64-vault", "platform": "n64", "path": "/mnt/roms/n64"}
+                ]
+            }"#,
+        )
+        .expect("vault catalog json is valid")
+    }
+
+    #[test]
+    fn release_spec_resolves_file_path_against_its_vault() {
+        // The Release's own Vault path wins even over the env fallback root.
+        let spec = resolve_release_spec(&vault_catalog(), "star-fox-64-ntsc", Some("/ignored"))
+            .expect("release resolves");
+        let rom = spec.args.last().expect("rom path appended");
+        assert!(
+            rom.starts_with("/mnt/roms/n64") && rom.contains("ntsc.z64"),
+            "rom path was: {rom}"
+        );
+    }
+
+    #[test]
+    fn release_spec_falls_back_to_env_root_for_manual_releases() {
+        // sample_catalog's Release has no vault_id, so the env fallback applies.
+        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("/fallback"))
+            .expect("release resolves");
+        let rom = spec.args.last().expect("rom path appended");
+        assert!(rom.starts_with("/fallback"), "rom path was: {rom}");
     }
 
     #[test]

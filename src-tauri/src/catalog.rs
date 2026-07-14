@@ -48,6 +48,12 @@ pub struct Release {
     pub release_type: ReleaseType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publisher: Option<String>,
+    /// The [`Vault`] this Release was discovered in, if any. When set, `file_path`
+    /// is resolved relative to that Vault's `path` at launch time; when absent the
+    /// Release was added manually and `file_path` is used as-is (an absolute path
+    /// or one relative to the process working directory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_id: Option<String>,
     pub file_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<Media>,
@@ -93,8 +99,30 @@ pub struct Playlist {
     pub release_ids: Vec<String>,
 }
 
-/// The centralized master directory of all [`Game`], [`Release`], [`Deck`], and
-/// [`Playlist`] definitions.
+/// A platform-scoped storage location the Import Scanner crawls for Releases.
+///
+/// Unlike the pre-`0004` model — a single directory whose platform was guessed
+/// per-file from the ROM extension — a Vault is bound to exactly one `platform`
+/// and simply *is* the folder where that platform's games live (a local drive, a
+/// network share, wherever). A collection therefore has one Vault per platform
+/// (occasionally several), not one Vault for everything. Because the platform is
+/// declared rather than inferred, ambiguous disc extensions (`.iso`, `.chd`)
+/// become scannable. See [`docs/adr/0004-per-platform-vaults.md`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Vault {
+    pub id: String,
+    pub platform: String,
+    pub path: String,
+    /// Optional override for which files count as ROMs in this Vault: a
+    /// comma/space-separated list of extensions (e.g. `"iso, chd"`, dots
+    /// optional). When absent, the platform's default extension set applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+}
+
+/// The centralized master directory of all [`Game`], [`Release`], [`Deck`],
+/// [`Playlist`], and [`Vault`] definitions.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Catalog {
@@ -106,6 +134,11 @@ pub struct Catalog {
     pub decks: Vec<Deck>,
     #[serde(default)]
     pub playlists: Vec<Playlist>,
+    /// The platform-scoped scan locations. The Import Scanner reads these to know
+    /// what to crawl; the launch engine reads them to resolve a Release's
+    /// `file_path` against the Vault it came from.
+    #[serde(default)]
+    pub vaults: Vec<Vault>,
 }
 
 /// Errors that can occur while loading a [`Catalog`] from disk.
@@ -328,6 +361,50 @@ mod tests {
             Catalog::from_json(r#"{ "playlists": [{ "id": "empty", "name": "Empty" }] }"#)
                 .expect("playlist without releaseIds is valid");
         assert!(catalog.playlists[0].release_ids.is_empty());
+    }
+
+    #[test]
+    fn parses_vaults_with_platform_and_path() {
+        let catalog = Catalog::from_json(
+            r#"{
+                "vaults": [
+                    {"id": "snes", "platform": "snes", "path": "/mnt/roms/snes"},
+                    {"id": "ps1", "platform": "ps1", "path": "//nas/games/ps1", "pattern": "chd, cue"}
+                ]
+            }"#,
+        )
+        .expect("valid catalog json");
+        assert_eq!(catalog.vaults.len(), 2);
+        assert_eq!(catalog.vaults[0].platform, "snes");
+        assert_eq!(catalog.vaults[0].pattern, None);
+        assert_eq!(catalog.vaults[1].pattern.as_deref(), Some("chd, cue"));
+    }
+
+    #[test]
+    fn vaults_default_to_empty_when_absent() {
+        let catalog = Catalog::from_json("{}").expect("empty object is a valid catalog");
+        assert!(catalog.vaults.is_empty());
+    }
+
+    #[test]
+    fn release_vault_id_round_trips_and_defaults() {
+        let catalog = Catalog::from_json(
+            r#"{
+                "releases": [
+                    {"id": "a", "gameId": "g", "title": "A", "platform": "snes",
+                     "releaseType": "retail", "vaultId": "snes", "filePath": "A.sfc"},
+                    {"id": "b", "gameId": "g", "title": "B", "platform": "snes",
+                     "releaseType": "retail", "filePath": "/abs/B.sfc"}
+                ]
+            }"#,
+        )
+        .expect("valid catalog json");
+        assert_eq!(catalog.releases[0].vault_id.as_deref(), Some("snes"));
+        assert_eq!(catalog.releases[1].vault_id, None);
+
+        // A manual Release (no vault) omits the field when re-serialised.
+        let json = serde_json::to_string(&catalog.releases[1]).expect("serialisable");
+        assert!(!json.contains("vaultId"), "json was: {json}");
     }
 
     #[test]

@@ -34,6 +34,7 @@
       "platform": "n64",
       "releaseType": "retail",
       "publisher": "Nintendo",
+      "vaultId": "n64-vault",
       "filePath": "star-fox-64/star-fox-64-ntsc.z64",
       "media": {
         "image": "star-fox-64/cover.webp"
@@ -47,6 +48,7 @@
       "platform": "n64",
       "releaseType": "retail",
       "publisher": "Nintendo",
+      "vaultId": "n64-vault",
       "filePath": "star-fox-64/lylat-wars-pal.z64"
     },
     {
@@ -57,6 +59,7 @@
       "platform": "snes",
       "releaseType": "retail",
       "publisher": "Nintendo",
+      "vaultId": "snes-vault",
       "filePath": "super-mario-bros-3/super-mario-bros-3-ntsc.sfc"
     },
     {
@@ -78,6 +81,7 @@
       "platform": "snes",
       "releaseType": "retail",
       "publisher": "Square",
+      "vaultId": "snes-vault",
       "filePath": "chrono-trigger/chrono-trigger-ntsc.sfc"
     },
     {
@@ -88,6 +92,7 @@
       "platform": "nes",
       "releaseType": "retail",
       "publisher": "Nintendo",
+      "vaultId": "nes-vault",
       "filePath": "metroid/metroid-ntsc.nes"
     }
   ],
@@ -125,6 +130,23 @@
         "metroid-ntsc",
         "super-mario-bros-3-ntsc"
       ]
+    }
+  ],
+  "vaults": [
+    {
+      "id": "n64-vault",
+      "platform": "n64",
+      "path": "roms/n64"
+    },
+    {
+      "id": "snes-vault",
+      "platform": "snes",
+      "path": "roms/snes"
+    },
+    {
+      "id": "nes-vault",
+      "platform": "nes",
+      "path": "roms/nes"
     }
   ]
 }
