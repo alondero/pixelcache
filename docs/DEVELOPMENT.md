@@ -86,15 +86,37 @@ Clicking Play on a Release in the Game details panel runs the Deck configured
 for the release's platform: `executablePath` + `arguments` + the release's
 `filePath`. Since the Deck entries in the mock catalog name bare executables
 (`mupen64plus`, `snes9x`, `mesen`), launches only succeed if those are on your
-`PATH`. Release `filePath`s are resolved against the Vault root when one is set:
+`PATH`.
+
+A Release's `filePath` is resolved against the **Vault it came from** — the
+`vaults` entry whose `id` matches the Release's `vaultId` (see
+[ADR 0004](adr/0004-per-platform-vaults.md)). The mock catalog's `vaults` use
+relative `path`s (`roms/n64`, …), so launches resolve against your working
+directory unless you point those at real folders.
+
+A **manual** Release (no `vaultId`) instead falls back to the
+`PIXELCACHE_VAULT_DIR` override, and passes `filePath` through as-is when that is
+unset:
 
 ```bash
-# Windows (PowerShell)
+# Windows (PowerShell) — fallback root for manual (vault-less) releases
 $env:PIXELCACHE_VAULT_DIR = "D:\roms"
 npm run tauri dev
 ```
 
-When unset, the `filePath` is passed to the Deck executable as-is.
+## Scanning a Vault (Import Scanner)
+
+`scan_vault` scans the Catalog's configured `vaults`, reconciles the results
+against the existing catalog (preserving manual Releases, Decks, Playlists, and
+curated Game metadata), and writes `catalog.json` to the app data dir. When no
+`vaults` are configured, a single ad-hoc Vault can be defined from the
+environment — both variables are required, since a Vault is platform-scoped:
+
+```bash
+# Scan one folder as a specific platform, without editing catalog.json
+$env:PIXELCACHE_VAULT_DIR = "D:\roms\snes"
+$env:PIXELCACHE_VAULT_PLATFORM = "snes"
+```
 
 ## Preview media
 

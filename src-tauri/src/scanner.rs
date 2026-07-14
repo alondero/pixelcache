@@ -1,57 +1,139 @@
 //! Import scanner module.
 //!
-//! Crawls a local Vault directory and synthesises a [`Catalog`] from ROM
+//! Crawls platform-scoped [`Vault`]s and synthesises a [`Catalog`] from ROM
 //! filenames, using the common No-Intro / TOSEC naming conventions
 //! (`Title (Region) (Revision) [flags].ext`). This is the inverse of
 //! [`crate::catalog`], which *reads* an existing `catalog.json`; here we
 //! *generate* one so the same serde schema — and therefore the same UI — can
 //! consume it.
 //!
+//! ## The Vault model (ADR 0004)
+//!
+//! A [`Vault`] is bound to exactly one platform and simply *is* the folder where
+//! that platform's games live. The platform is therefore *declared*, not guessed
+//! from the file extension as it was in the single-directory model this replaces.
+//! Two consequences fall out of that:
+//!
+//! * A scan iterates over *many* Vaults (one per platform, occasionally several)
+//!   and merges their Releases into one Catalog.
+//! * Ambiguous disc extensions (`.iso`, `.chd`, `.cue`) become scannable, because
+//!   the Vault — not the extension — says which platform a file belongs to.
+//!
+//! ## Reconciliation
+//!
+//! A Vault is only *one* source of Releases: the player can also add a Release by
+//! hand (for a console or a Playlist) from a location outside any Vault. So a
+//! rescan does not overwrite the Catalog wholesale — [`apply_scan`] *reconciles*,
+//! replacing only the Releases owned by the scanned Vaults and preserving manual
+//! Releases, Decks, Playlists, the Vault config, and curated Game metadata.
+//!
 //! Following the layering established in [`crate::launch`], the module is split
 //! so the decision-making is unit-testable without ever touching the filesystem
 //! (see the PRD's "Filename Parser Tests" testing decision):
 //!
-//! 1. [`platform_for_extension`] / [`parse_filename`] / [`build_catalog`] — pure.
-//! 2. [`walk_vault`] / [`scan_vault_to_catalog`] — the only functions that read
+//! 1. [`default_extensions_for_platform`] / [`parse_filename`] / [`apply_scan`]
+//!    — pure.
+//! 2. [`walk_vault`] / [`scan_vaults_to_files`] — the only functions that read
 //!    the filesystem.
-//! 3. [`scan_vault`] — the thin Tauri command; it resolves the Vault directory,
-//!    writes `catalog.json`, and stringifies the typed [`ScanError`] only at the
-//!    IPC boundary.
+//! 3. [`scan_vault`] — the thin Tauri command; it resolves the Vaults to scan,
+//!    reconciles against the existing catalog, writes `catalog.json`, and
+//!    stringifies the typed [`ScanError`] only at the IPC boundary.
 
-use crate::catalog::{Catalog, Game, Release, ReleaseType};
+use crate::catalog::{Catalog, Game, Release, ReleaseType, Vault};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Environment variable naming the Vault directory to scan when the frontend
-/// invokes `scan_vault` without an explicit path. Mirrors the override pattern
-/// used by [`crate::launch`] so a developer can point at a real ROM folder
-/// without recompiling.
+/// Environment variable naming a single ad-hoc Vault directory to scan when no
+/// Vaults are configured in the catalog and none are passed explicitly. A dev
+/// convenience mirroring the override pattern used by [`crate::launch`]; it must
+/// be paired with [`VAULT_PLATFORM_ENV`] so the scanner knows the platform.
 pub const VAULT_DIR_ENV: &str = "PIXELCACHE_VAULT_DIR";
 
-/// Map a file extension (without the leading dot, any case) to the platform it
-/// belongs to, or `None` if the extension is not a recognised ROM.
+/// Environment variable naming the platform of the ad-hoc [`VAULT_DIR_ENV`]
+/// Vault. Required for the env fallback because a Vault is platform-scoped.
+pub const VAULT_PLATFORM_ENV: &str = "PIXELCACHE_VAULT_PLATFORM";
+
+/// The default set of ROM file extensions (without the leading dot, lower-case)
+/// for a platform, or an empty slice for a platform with no built-in mapping.
 ///
-/// This doubles as the "valid ROM file extension" filter for the directory
-/// walk: a file is a ROM if and only if this returns `Some`. Only extensions
-/// that map unambiguously to a single platform are included — disc images like
-/// `.iso`/`.chd` are deliberately omitted because the same extension spans many
-/// platforms and would produce an unreliable `platform` field.
-pub fn platform_for_extension(ext: &str) -> Option<&'static str> {
-    match ext.to_ascii_lowercase().as_str() {
-        "sfc" | "smc" => Some("snes"),
-        "nes" | "fds" => Some("nes"),
-        "n64" | "z64" | "v64" => Some("n64"),
-        "gb" => Some("gb"),
-        "gbc" => Some("gbc"),
-        "gba" => Some("gba"),
-        "md" | "smd" | "gen" => Some("genesis"),
-        "sms" => Some("sms"),
-        "gg" => Some("gamegear"),
-        "pce" => Some("pcengine"),
-        "a26" => Some("atari2600"),
-        "ws" | "wsc" => Some("wonderswan"),
-        "ngp" | "ngc" => Some("neogeopocket"),
-        _ => None,
+/// This is the inverse of the old extension→platform lookup: the platform is
+/// known up-front from the [`Vault`], so a single mapping can list every
+/// extension the platform uses — including the disc-image formats (`.iso`,
+/// `.chd`, …) that were previously excluded for being ambiguous across
+/// platforms. A Vault whose platform is not listed here must supply an explicit
+/// [`Vault::pattern`].
+pub fn default_extensions_for_platform(platform: &str) -> &'static [&'static str] {
+    match platform {
+        // Cartridge platforms — one extension family each.
+        "snes" => &["sfc", "smc"],
+        "nes" => &["nes", "fds"],
+        "n64" => &["n64", "z64", "v64"],
+        "gb" => &["gb"],
+        "gbc" => &["gbc"],
+        "gba" => &["gba"],
+        "genesis" => &["md", "smd", "gen"],
+        "sms" => &["sms"],
+        "gamegear" => &["gg"],
+        "pcengine" => &["pce"],
+        "atari2600" => &["a26"],
+        "wonderswan" => &["ws", "wsc"],
+        "neogeopocket" => &["ngp", "ngc"],
+        // Disc-based platforms — now unambiguous because the Vault declares the
+        // platform, so the same `.iso`/`.chd` can mean different things per Vault.
+        "ps1" => &["chd", "cue", "bin", "img", "pbp", "iso"],
+        "ps2" => &["iso", "chd", "cue", "bin"],
+        "psp" => &["iso", "cso", "chd"],
+        "gamecube" => &["iso", "gcm", "rvz", "ciso"],
+        "wii" => &["iso", "rvz", "wbfs"],
+        "dreamcast" => &["chd", "gdi", "cdi"],
+        "saturn" => &["chd", "cue", "bin", "iso"],
+        "segacd" => &["chd", "cue", "bin", "iso"],
+        "3do" => &["chd", "cue", "iso"],
+        "pcenginecd" => &["chd", "cue", "bin"],
+        _ => &[],
+    }
+}
+
+/// Resolve the extension allow-list for a Vault: its explicit [`Vault::pattern`]
+/// if set, otherwise the platform default. Returned lower-cased and de-duped.
+pub fn vault_extensions(vault: &Vault) -> Vec<String> {
+    match &vault.pattern {
+        Some(pattern) => parse_pattern(pattern),
+        None => default_extensions_for_platform(&vault.platform)
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    }
+}
+
+/// Parse a Vault pattern into a list of bare, lower-case extensions.
+///
+/// Accepts a comma / semicolon / whitespace separated list; each entry may be a
+/// bare extension (`chd`), dotted (`.chd`), or a simple glob (`*.chd`).
+fn parse_pattern(pattern: &str) -> Vec<String> {
+    let mut exts: Vec<String> = Vec::new();
+    for raw in pattern.split(|c: char| c == ',' || c == ';' || c.is_whitespace()) {
+        let ext = raw
+            .trim()
+            .trim_start_matches("*.")
+            .trim_start_matches('.')
+            .to_ascii_lowercase();
+        if !ext.is_empty() && !exts.contains(&ext) {
+            exts.push(ext);
+        }
+    }
+    exts
+}
+
+/// Whether `path`'s extension is in the allow-list (case-insensitive). This is
+/// the "is this file a ROM for the Vault" filter for the directory walk.
+fn extension_matches(exts: &[String], path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => {
+            let ext = ext.to_ascii_lowercase();
+            exts.iter().any(|e| e == &ext)
+        }
+        None => false,
     }
 }
 
@@ -92,26 +174,51 @@ pub fn parse_filename(stem: &str) -> ParsedName {
 /// A single ROM file discovered by the walk, resolved to what the catalog needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RomFile {
-    /// Path relative to the Vault root, using `/` separators for portable JSON.
+    /// Path relative to the owning Vault root, using `/` separators for portable
+    /// JSON. Resolved back to an absolute path against the Vault at launch time.
     pub relative_path: String,
     pub platform: String,
+    /// The id of the [`Vault`] this file was found in, recorded on the generated
+    /// Release so reconciliation and launch can tie it back to its source.
+    pub vault_id: String,
     pub parsed: ParsedName,
 }
 
-/// Build a [`Catalog`] from a set of scanned ROM files (pure).
+/// Reconcile a set of freshly scanned ROM files into an existing [`Catalog`],
+/// returning the merged result (pure).
+///
+/// A scan owns only the Releases that came from the Vaults it scanned
+/// (`scanned_vault_ids`). Everything else is preserved verbatim:
+///
+/// * **Manual Releases** (no `vault_id`) and Releases from Vaults *not* in this
+///   scan are kept — the player added or scanned those elsewhere.
+/// * Releases from the scanned Vaults are dropped and rebuilt from `files`, so a
+///   ROM deleted on disk disappears from the catalog on the next scan.
+/// * **Decks**, **Playlists**, and the **Vault** config carry over unchanged.
+/// * A [`Game`]'s curated `developer` / `relations` survive; only its
+///   `primary_release_id` is recomputed from the reconciled Release set.
 ///
 /// Releases are grouped into a [`Game`] by the slug of their title, so regional
-/// variations and revisions that share a title collapse under one Game card.
-/// Cross-title relations (e.g. *Star Fox 64* / *Lylat Wars*) require a curated
-/// database and are left for manual `relations` per the PRD.
-pub fn build_catalog(files: &[RomFile]) -> Catalog {
+/// variations and revisions — and straight ports across platforms — collapse
+/// under one Game card.
+pub fn apply_scan(existing: &Catalog, files: &[RomFile], scanned_vault_ids: &[String]) -> Catalog {
+    let owned_by_scan = |vault_id: &Option<String>| match vault_id {
+        Some(id) => scanned_vault_ids.iter().any(|s| s == id),
+        None => false,
+    };
+
+    // Retain everything this scan does not own, preserving order.
+    let mut releases: Vec<Release> = existing
+        .releases
+        .iter()
+        .filter(|r| !owned_by_scan(&r.vault_id))
+        .cloned()
+        .collect();
+    let mut used_release_ids: Vec<String> = releases.iter().map(|r| r.id.clone()).collect();
+
     // Sort for deterministic output regardless of filesystem iteration order.
     let mut files = files.to_vec();
     files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-
-    let mut games: Vec<Game> = Vec::new();
-    let mut releases: Vec<Release> = Vec::new();
-    let mut used_release_ids: Vec<String> = Vec::new();
 
     for file in &files {
         let game_id = slug(&file.parsed.title);
@@ -121,61 +228,73 @@ pub fn build_catalog(files: &[RomFile]) -> Catalog {
         }
 
         let release_id = unique_id(&release_base_id(file), &mut used_release_ids);
-
         releases.push(Release {
-            id: release_id.clone(),
-            game_id: game_id.clone(),
+            id: release_id,
+            game_id,
             title: file.parsed.title.clone(),
             region: file.parsed.region.clone(),
             platform: file.platform.clone(),
             revision: file.parsed.revision.clone(),
             release_type: file.parsed.release_type,
             publisher: None,
+            vault_id: Some(file.vault_id.clone()),
             file_path: file.relative_path.clone(),
             media: None,
         });
-
-        if let Some(game) = games.iter_mut().find(|g| g.id == game_id) {
-            // A better candidate (more canonical release) may supersede the
-            // primary chosen so far.
-            let current = releases
-                .iter()
-                .find(|r| r.id == game.primary_release_id)
-                .expect("primary release exists");
-            let candidate = releases.last().expect("just pushed");
-            if primary_rank(candidate) < primary_rank(current) {
-                game.primary_release_id = release_id;
-            }
-        } else {
-            games.push(Game {
-                id: game_id,
-                developer: None,
-                primary_release_id: release_id,
-                relations: Vec::new(),
-            });
-        }
     }
 
     Catalog {
-        games,
+        games: group_games(&releases, &existing.games),
         releases,
-        decks: Vec::new(),
-        // A Vault scan discovers Games/Releases from ROM files; Playlists are a
-        // player-curated concept the scanner never generates.
-        playlists: Vec::new(),
+        decks: existing.decks.clone(),
+        playlists: existing.playlists.clone(),
+        vaults: existing.vaults.clone(),
     }
 }
 
-/// Errors that can occur while scanning a Vault directory.
+/// Group Releases into Games by title slug, preserving curated metadata from
+/// `existing_games` and recomputing each Game's primary (canonical) Release.
+fn group_games(releases: &[Release], existing_games: &[Game]) -> Vec<Game> {
+    let mut games: Vec<Game> = Vec::new();
+    for release in releases {
+        if let Some(game) = games.iter_mut().find(|g| g.id == release.game_id) {
+            // A more canonical Release supersedes the primary chosen so far.
+            let current = releases
+                .iter()
+                .find(|r| r.id == game.primary_release_id)
+                .expect("primary release exists in the reconciled set");
+            if primary_rank(release) < primary_rank(current) {
+                game.primary_release_id = release.id.clone();
+            }
+        } else {
+            // Seed developer / relations from the curated Game if we already had
+            // one under this id; a fresh Game starts with neither.
+            let (developer, relations) = existing_games
+                .iter()
+                .find(|g| g.id == release.game_id)
+                .map(|g| (g.developer.clone(), g.relations.clone()))
+                .unwrap_or((None, Vec::new()));
+            games.push(Game {
+                id: release.game_id.clone(),
+                developer,
+                primary_release_id: release.id.clone(),
+                relations,
+            });
+        }
+    }
+    games
+}
+
+/// Errors that can occur while scanning Vaults.
 ///
 /// Per the project's error-handling convention (`CLAUDE.md`), the scanner keeps
 /// a typed error and only stringifies it at the Tauri boundary.
 #[derive(Debug)]
 pub enum ScanError {
-    /// No Vault directory was supplied, by argument or the environment.
-    NoVaultDir,
-    /// The Vault path does not exist or is not a directory.
-    NotADirectory { path: String },
+    /// No Vaults were configured, passed, or resolvable from the environment.
+    NoVaults,
+    /// A Vault's path does not exist or is not a directory.
+    NotADirectory { vault_id: String, path: String },
     /// A directory could not be read while walking the tree.
     ReadDir {
         path: String,
@@ -193,11 +312,13 @@ pub enum ScanError {
 impl fmt::Display for ScanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ScanError::NoVaultDir => {
-                write!(f, "no vault directory provided (set {VAULT_DIR_ENV})")
-            }
-            ScanError::NotADirectory { path } => {
-                write!(f, "vault path '{path}' is not a directory")
+            ScanError::NoVaults => write!(
+                f,
+                "no vaults to scan (configure vaults in catalog.json, or set \
+                 {VAULT_DIR_ENV} and {VAULT_PLATFORM_ENV})"
+            ),
+            ScanError::NotADirectory { vault_id, path } => {
+                write!(f, "vault '{vault_id}' path '{path}' is not a directory")
             }
             ScanError::ReadDir { path, source } => {
                 write!(f, "failed to read directory '{path}': {source}")
@@ -217,27 +338,38 @@ impl std::error::Error for ScanError {
         match self {
             ScanError::ReadDir { source, .. } | ScanError::Write { source, .. } => Some(source),
             ScanError::Serialize { source } => Some(source),
-            ScanError::NoVaultDir | ScanError::NotADirectory { .. } => None,
+            ScanError::NoVaults | ScanError::NotADirectory { .. } => None,
         }
     }
 }
 
-/// Recursively walk `vault`, returning every recognised ROM file (IO).
+/// Recursively walk a single [`Vault`], returning every file that matches its
+/// extension allow-list (IO).
 ///
-/// Paths are recorded relative to `vault` with `/` separators so the resulting
-/// `filePath` values are portable across platforms in `catalog.json`.
-pub fn walk_vault(vault: &Path) -> Result<Vec<RomFile>, ScanError> {
-    if !vault.is_dir() {
+/// Every discovered [`RomFile`] is tagged with `vault.platform` and `vault.id`;
+/// paths are recorded relative to the Vault root with `/` separators so the
+/// resulting `filePath` values are portable across platforms in `catalog.json`.
+pub fn walk_vault(vault: &Vault) -> Result<Vec<RomFile>, ScanError> {
+    let root = Path::new(&vault.path);
+    if !root.is_dir() {
         return Err(ScanError::NotADirectory {
-            path: vault.display().to_string(),
+            vault_id: vault.id.clone(),
+            path: vault.path.clone(),
         });
     }
+    let exts = vault_extensions(vault);
     let mut roms = Vec::new();
-    walk_into(vault, vault, &mut roms)?;
+    walk_into(vault, &exts, root, root, &mut roms)?;
     Ok(roms)
 }
 
-fn walk_into(root: &Path, dir: &Path, roms: &mut Vec<RomFile>) -> Result<(), ScanError> {
+fn walk_into(
+    vault: &Vault,
+    exts: &[String],
+    root: &Path,
+    dir: &Path,
+    roms: &mut Vec<RomFile>,
+) -> Result<(), ScanError> {
     let entries = std::fs::read_dir(dir).map_err(|source| ScanError::ReadDir {
         path: dir.display().to_string(),
         source,
@@ -250,35 +382,40 @@ fn walk_into(root: &Path, dir: &Path, roms: &mut Vec<RomFile>) -> Result<(), Sca
         })?;
         let path = entry.path();
         if path.is_dir() {
-            walk_into(root, &path, roms)?;
+            walk_into(vault, exts, root, &path, roms)?;
             continue;
         }
-        if let Some(rom) = classify_path(root, &path) {
+        if let Some(rom) = classify_path(vault, exts, root, &path) {
             roms.push(rom);
         }
     }
     Ok(())
 }
 
-/// Turn a single filesystem path into a [`RomFile`] if its extension is a
-/// recognised ROM, otherwise `None` (pure given the two paths).
-fn classify_path(root: &Path, path: &Path) -> Option<RomFile> {
-    let ext = path.extension()?.to_str()?;
-    let platform = platform_for_extension(ext)?;
+/// Turn a single filesystem path into a [`RomFile`] for `vault` if its extension
+/// is in the allow-list, otherwise `None` (pure given the paths).
+fn classify_path(vault: &Vault, exts: &[String], root: &Path, path: &Path) -> Option<RomFile> {
+    if !extension_matches(exts, path) {
+        return None;
+    }
     let stem = path.file_stem()?.to_str()?;
     let relative = path.strip_prefix(root).unwrap_or(path);
 
     Some(RomFile {
         relative_path: to_portable(relative),
-        platform: platform.to_string(),
+        platform: vault.platform.clone(),
+        vault_id: vault.id.clone(),
         parsed: parse_filename(stem),
     })
 }
 
-/// Walk a Vault directory and build a [`Catalog`] from it (IO).
-pub fn scan_vault_to_catalog(vault: &Path) -> Result<Catalog, ScanError> {
-    let roms = walk_vault(vault)?;
-    Ok(build_catalog(&roms))
+/// Walk every Vault and collect their ROM files (IO).
+pub fn scan_vaults_to_files(vaults: &[Vault]) -> Result<Vec<RomFile>, ScanError> {
+    let mut roms = Vec::new();
+    for vault in vaults {
+        roms.extend(walk_vault(vault)?);
+    }
+    Ok(roms)
 }
 
 /// Serialise `catalog` to pretty JSON and write it to `path`, creating parent
@@ -298,22 +435,37 @@ pub fn write_catalog(catalog: &Catalog, path: &Path) -> Result<(), ScanError> {
     })
 }
 
-/// Tauri command: scan a Vault directory, persist a fresh `catalog.json`, and
-/// return the generated [`Catalog`] so the frontend can refresh its grid.
+/// Tauri command: scan the configured Vaults, reconcile against the existing
+/// `catalog.json`, persist it, and return the merged [`Catalog`] so the frontend
+/// can refresh its grid.
 ///
-/// `vault_path` overrides the [`VAULT_DIR_ENV`] environment variable. The
-/// catalog is written to the app's data directory, which [`crate::catalog`]
-/// then prefers over the bundled resource on subsequent loads.
+/// The Vaults to scan are resolved, in order of precedence, from: the `vaults`
+/// argument (a UI-supplied set, also persisted into the catalog), the catalog's
+/// own `vaults`, or the [`VAULT_DIR_ENV`] + [`VAULT_PLATFORM_ENV`] env pair for a
+/// single ad-hoc dev Vault. The catalog is written to the app's data directory,
+/// which [`crate::catalog`] then prefers over the bundled resource on subsequent
+/// loads.
 #[tauri::command]
 pub async fn scan_vault(
     app: tauri::AppHandle,
-    vault_path: Option<String>,
+    vaults: Option<Vec<Vault>>,
 ) -> Result<Catalog, String> {
     use tauri::Manager;
 
-    let vault = resolve_vault_dir(vault_path).ok_or_else(|| ScanError::NoVaultDir.to_string())?;
+    // Load the current catalog so manual Releases, Decks, Playlists, and curated
+    // Game metadata survive the rescan. A missing catalog is treated as empty.
+    let existing = crate::catalog::load_bundled_catalog(&app).unwrap_or_default();
 
-    let catalog = scan_vault_to_catalog(&vault).map_err(|e| e.to_string())?;
+    let to_scan = resolve_vaults(vaults, &existing).map_err(|e| e.to_string())?;
+
+    let files = scan_vaults_to_files(&to_scan).map_err(|e| e.to_string())?;
+    let scanned_ids: Vec<String> = to_scan.iter().map(|v| v.id.clone()).collect();
+
+    // Persist the scanned Vault definitions alongside any others already known.
+    let mut base = existing;
+    upsert_vaults(&mut base.vaults, &to_scan);
+
+    let catalog = apply_scan(&base, &files, &scanned_ids);
 
     let out_path = app
         .path()
@@ -325,18 +477,51 @@ pub async fn scan_vault(
     Ok(catalog)
 }
 
-/// Resolve the Vault directory from an explicit argument, falling back to the
-/// [`VAULT_DIR_ENV`] environment variable. Blank values are treated as absent.
-fn resolve_vault_dir(vault_path: Option<String>) -> Option<PathBuf> {
-    let raw = match vault_path {
-        Some(p) if !p.trim().is_empty() => Some(p),
-        _ => std::env::var(VAULT_DIR_ENV).ok(),
-    }?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(trimmed))
+/// Resolve which Vaults to scan: an explicit argument, else the catalog's
+/// configured Vaults, else a single env-defined ad-hoc Vault for local dev.
+fn resolve_vaults(arg: Option<Vec<Vault>>, existing: &Catalog) -> Result<Vec<Vault>, ScanError> {
+    if let Some(vaults) = arg {
+        if !vaults.is_empty() {
+            return Ok(vaults);
+        }
+    }
+    if !existing.vaults.is_empty() {
+        return Ok(existing.vaults.clone());
+    }
+    if let Some(vault) = env_vault() {
+        return Ok(vec![vault]);
+    }
+    Err(ScanError::NoVaults)
+}
+
+/// A single ad-hoc Vault built from [`VAULT_DIR_ENV`] + [`VAULT_PLATFORM_ENV`],
+/// or `None` when either is unset/blank. Blank values are treated as absent.
+fn env_vault() -> Option<Vault> {
+    let non_blank = |var: &str| {
+        std::env::var(var)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let path = non_blank(VAULT_DIR_ENV)?;
+    let platform = non_blank(VAULT_PLATFORM_ENV)?;
+    Some(Vault {
+        id: format!("{platform}-vault"),
+        platform,
+        path,
+        pattern: None,
+    })
+}
+
+/// Insert or replace each incoming Vault into `vaults`, keyed by id, so a
+/// rescan's Vault definitions are persisted without duplicating existing ones.
+fn upsert_vaults(vaults: &mut Vec<Vault>, incoming: &[Vault]) {
+    for vault in incoming {
+        if let Some(existing) = vaults.iter_mut().find(|v| v.id == vault.id) {
+            *existing = vault.clone();
+        } else {
+            vaults.push(vault.clone());
+        }
     }
 }
 
@@ -548,23 +733,48 @@ fn to_portable(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    /// Build a fresh [`Catalog`] from scanned files, treating every Vault they
+    /// reference as scanned — the scan-from-nothing case, exercised on its own.
+    fn build_catalog(files: &[RomFile]) -> Catalog {
+        let mut vault_ids: Vec<String> = Vec::new();
+        for file in files {
+            if !vault_ids.contains(&file.vault_id) {
+                vault_ids.push(file.vault_id.clone());
+            }
+        }
+        apply_scan(&Catalog::default(), files, &vault_ids)
+    }
 
     // --- Extension / platform filter ---------------------------------------
 
     #[test]
-    fn recognises_common_rom_extensions_per_platform() {
-        assert_eq!(platform_for_extension("sfc"), Some("snes"));
-        assert_eq!(platform_for_extension("SMC"), Some("snes")); // case-insensitive
-        assert_eq!(platform_for_extension("z64"), Some("n64"));
-        assert_eq!(platform_for_extension("gba"), Some("gba"));
-        assert_eq!(platform_for_extension("md"), Some("genesis"));
+    fn platform_defaults_cover_cartridge_and_disc_systems() {
+        assert!(default_extensions_for_platform("snes").contains(&"sfc"));
+        assert!(default_extensions_for_platform("n64").contains(&"z64"));
+        // Disc formats are now first-class because the Vault names the platform.
+        assert!(default_extensions_for_platform("ps1").contains(&"chd"));
+        assert!(default_extensions_for_platform("gamecube").contains(&"iso"));
     }
 
     #[test]
-    fn rejects_non_rom_extensions() {
-        assert_eq!(platform_for_extension("txt"), None);
-        assert_eq!(platform_for_extension("png"), None);
-        assert_eq!(platform_for_extension("iso"), None); // ambiguous, deliberately excluded
+    fn unknown_platform_has_no_default_extensions() {
+        assert!(default_extensions_for_platform("dridgeland").is_empty());
+    }
+
+    #[test]
+    fn pattern_overrides_platform_defaults() {
+        let vault = vault("v", "snes", "/x", Some("iso, chd"));
+        let exts = vault_extensions(&vault);
+        assert_eq!(exts, vec!["iso".to_string(), "chd".to_string()]);
+    }
+
+    #[test]
+    fn pattern_accepts_dotted_and_glob_forms() {
+        assert_eq!(parse_pattern("*.chd .cue bin"), vec!["chd", "cue", "bin"]);
+        // Case-insensitive and de-duplicated.
+        assert_eq!(parse_pattern("ISO, iso; ISO"), vec!["iso"]);
     }
 
     // --- Filename parser (No-Intro / TOSEC suite) --------------------------
@@ -648,10 +858,24 @@ mod tests {
 
     // --- Catalog building ---------------------------------------------------
 
+    fn vault(id: &str, platform: &str, path: &str, pattern: Option<&str>) -> Vault {
+        Vault {
+            id: id.to_string(),
+            platform: platform.to_string(),
+            path: path.to_string(),
+            pattern: pattern.map(|p| p.to_string()),
+        }
+    }
+
     fn rom(relative_path: &str, platform: &str, parsed: ParsedName) -> RomFile {
+        rom_in(relative_path, platform, "vault", parsed)
+    }
+
+    fn rom_in(relative_path: &str, platform: &str, vault_id: &str, parsed: ParsedName) -> RomFile {
         RomFile {
             relative_path: relative_path.to_string(),
             platform: platform.to_string(),
+            vault_id: vault_id.to_string(),
             parsed,
         }
     }
@@ -681,6 +905,18 @@ mod tests {
             .filter(|r| r.game_id == game.id)
             .count();
         assert_eq!(for_game, 2);
+    }
+
+    #[test]
+    fn scanned_releases_carry_their_vault_id() {
+        let files = vec![rom_in(
+            "Super Mario World (USA).sfc",
+            "snes",
+            "snes-vault",
+            parse_filename("Super Mario World (USA)"),
+        )];
+        let catalog = build_catalog(&files);
+        assert_eq!(catalog.releases[0].vault_id.as_deref(), Some("snes-vault"));
     }
 
     #[test]
@@ -767,6 +1003,110 @@ mod tests {
         assert_eq!(catalog, reparsed);
     }
 
+    // --- Reconciliation (apply_scan) ---------------------------------------
+
+    #[test]
+    fn rescan_preserves_manual_releases_decks_and_playlists() {
+        let existing = Catalog::from_json(
+            r#"{
+                "games": [{"id": "manual", "primaryReleaseId": "manual-rel", "relations": []}],
+                "releases": [{
+                    "id": "manual-rel", "gameId": "manual", "title": "Manual",
+                    "platform": "snes", "releaseType": "retail", "filePath": "/elsewhere/manual.sfc"
+                }],
+                "decks": [{"id": "d", "platform": "snes", "executablePath": "snes9x", "arguments": []}],
+                "playlists": [{"id": "p", "name": "P", "releaseIds": ["manual-rel"]}]
+            }"#,
+        )
+        .expect("valid catalog");
+
+        let files = vec![rom_in(
+            "Super Mario World (USA).sfc",
+            "snes",
+            "snes-vault",
+            parse_filename("Super Mario World (USA)"),
+        )];
+        let catalog = apply_scan(&existing, &files, &["snes-vault".to_string()]);
+
+        // Manual release survives untouched (still no vault, still absolute path).
+        let manual = catalog
+            .releases
+            .iter()
+            .find(|r| r.id == "manual-rel")
+            .expect("manual release preserved");
+        assert_eq!(manual.vault_id, None);
+        assert_eq!(manual.file_path, "/elsewhere/manual.sfc");
+        // Scanned release was added.
+        assert!(catalog
+            .releases
+            .iter()
+            .any(|r| r.title == "Super Mario World"));
+        // Decks and playlists carried over.
+        assert_eq!(catalog.decks.len(), 1);
+        assert_eq!(catalog.playlists.len(), 1);
+    }
+
+    #[test]
+    fn rescan_replaces_only_the_scanned_vaults_releases() {
+        let existing = Catalog::from_json(
+            r#"{
+                "releases": [
+                    {"id": "old-snes", "gameId": "g", "title": "Old", "platform": "snes",
+                     "releaseType": "retail", "vaultId": "snes-vault", "filePath": "Old.sfc"},
+                    {"id": "keep-nes", "gameId": "h", "title": "Keep", "platform": "nes",
+                     "releaseType": "retail", "vaultId": "nes-vault", "filePath": "Keep.nes"}
+                ]
+            }"#,
+        )
+        .expect("valid catalog");
+
+        // Rescanning only the snes vault drops its stale release but keeps the
+        // nes vault's release (a different, un-scanned vault this pass).
+        let files = vec![rom_in(
+            "New (USA).sfc",
+            "snes",
+            "snes-vault",
+            parse_filename("New (USA)"),
+        )];
+        let catalog = apply_scan(&existing, &files, &["snes-vault".to_string()]);
+
+        assert!(catalog.releases.iter().all(|r| r.id != "old-snes"));
+        assert!(catalog.releases.iter().any(|r| r.id == "keep-nes"));
+        assert!(catalog.releases.iter().any(|r| r.title == "New"));
+    }
+
+    #[test]
+    fn rescan_preserves_curated_game_metadata() {
+        let existing = Catalog::from_json(
+            r#"{
+                "games": [{"id": "super-mario-world", "developer": "Nintendo EAD",
+                           "primaryReleaseId": "gone", "relations": ["sequel"]}]
+            }"#,
+        )
+        .expect("valid catalog");
+
+        let files = vec![rom_in(
+            "Super Mario World (USA).sfc",
+            "snes",
+            "snes-vault",
+            parse_filename("Super Mario World (USA)"),
+        )];
+        let catalog = apply_scan(&existing, &files, &["snes-vault".to_string()]);
+
+        let game = catalog
+            .games
+            .iter()
+            .find(|g| g.id == "super-mario-world")
+            .expect("game present");
+        assert_eq!(game.developer.as_deref(), Some("Nintendo EAD"));
+        assert_eq!(game.relations, vec!["sequel".to_string()]);
+        // Primary was recomputed to point at a real, current release.
+        assert!(catalog
+            .releases
+            .iter()
+            .any(|r| r.id == game.primary_release_id));
+    }
+
     // --- Directory walk (IO) ------------------------------------------------
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -777,50 +1117,121 @@ mod tests {
     }
 
     #[test]
-    fn walk_vault_finds_roms_and_ignores_other_files() {
+    fn walk_vault_finds_matching_roms_and_ignores_the_rest() {
         let dir = temp_dir("walk");
+        // A matching snes ROM, plus files the snes Vault must ignore: a non-ROM
+        // and a ROM for a different platform's extension.
         std::fs::write(dir.join("Super Mario World (USA).sfc"), b"rom").unwrap();
         std::fs::write(dir.join("readme.txt"), b"not a rom").unwrap();
-        let sub = dir.join("n64");
+        std::fs::write(dir.join("Star Fox 64 (USA).z64"), b"wrong platform").unwrap();
+        let sub = dir.join("hacks");
         std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("Star Fox 64 (USA).z64"), b"rom").unwrap();
+        std::fs::write(sub.join("Mario Hack (USA) [h1].smc"), b"rom").unwrap();
 
-        let mut roms = walk_vault(&dir).expect("walk succeeds");
+        let vault = vault("snes-vault", "snes", dir.to_str().unwrap(), None);
+        let mut roms = walk_vault(&vault).expect("walk succeeds");
         std::fs::remove_dir_all(&dir).ok();
 
         roms.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-        assert_eq!(roms.len(), 2);
-        assert!(roms.iter().any(|r| r.platform == "snes"));
-        assert!(roms.iter().any(|r| r.platform == "n64"));
+        assert_eq!(roms.len(), 2, "only .sfc/.smc match the snes vault");
+        assert!(roms.iter().all(|r| r.platform == "snes"));
+        assert!(roms.iter().all(|r| r.vault_id == "snes-vault"));
         // Nested paths are recorded portably with '/'.
         assert!(roms
             .iter()
-            .any(|r| r.relative_path == "n64/Star Fox 64 (USA).z64"));
+            .any(|r| r.relative_path == "hacks/Mario Hack (USA) [h1].smc"));
+    }
+
+    #[test]
+    fn walk_vault_scans_disc_images_by_declared_platform() {
+        let dir = temp_dir("disc");
+        // An .iso — ambiguous by extension, but unambiguous here because the
+        // Vault declares the platform. The old scanner rejected these outright.
+        std::fs::write(dir.join("Final Fantasy VII (USA).chd"), b"disc").unwrap();
+        std::fs::write(dir.join("Metal Gear Solid (USA).iso"), b"disc").unwrap();
+
+        let vault = vault("ps1-vault", "ps1", dir.to_str().unwrap(), None);
+        let roms = walk_vault(&vault).expect("walk succeeds");
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(roms.len(), 2);
+        assert!(roms.iter().all(|r| r.platform == "ps1"));
     }
 
     #[test]
     fn walk_vault_rejects_a_non_directory() {
-        let path = Path::new("definitely-not-a-real-pixelcache-vault-dir");
-        let err = walk_vault(path).expect_err("missing dir errors");
+        let vault = vault(
+            "v",
+            "snes",
+            "definitely-not-a-real-pixelcache-vault-dir",
+            None,
+        );
+        let err = walk_vault(&vault).expect_err("missing dir errors");
         assert!(matches!(err, ScanError::NotADirectory { .. }));
     }
 
     #[test]
-    fn no_vault_dir_error_names_the_env_var() {
-        let message = ScanError::NoVaultDir.to_string();
+    fn no_vaults_error_names_the_env_vars() {
+        let message = ScanError::NoVaults.to_string();
         assert!(message.contains(VAULT_DIR_ENV), "message was: {message}");
+        assert!(
+            message.contains(VAULT_PLATFORM_ENV),
+            "message was: {message}"
+        );
     }
 
     #[test]
-    fn scan_vault_to_catalog_end_to_end() {
+    fn resolve_vaults_prefers_argument_then_catalog() {
+        let arg = vec![vault("a", "snes", "/a", None)];
+        let existing = Catalog {
+            vaults: vec![vault("b", "nes", "/b", None)],
+            ..Catalog::default()
+        };
+        // Argument wins when present.
+        assert_eq!(
+            resolve_vaults(Some(arg.clone()), &existing).unwrap()[0].id,
+            "a"
+        );
+        // Falls back to the catalog's configured vaults.
+        assert_eq!(resolve_vaults(None, &existing).unwrap()[0].id, "b");
+        // Empty everywhere (and no env) is an error.
+        assert!(matches!(
+            resolve_vaults(Some(vec![]), &Catalog::default()),
+            Err(ScanError::NoVaults)
+        ));
+    }
+
+    #[test]
+    fn upsert_vaults_replaces_by_id_and_appends_new() {
+        let mut vaults = vec![vault("a", "snes", "/old", None)];
+        upsert_vaults(
+            &mut vaults,
+            &[
+                vault("a", "snes", "/new", None),
+                vault("b", "nes", "/b", None),
+            ],
+        );
+        assert_eq!(vaults.len(), 2);
+        assert_eq!(vaults.iter().find(|v| v.id == "a").unwrap().path, "/new");
+        assert!(vaults.iter().any(|v| v.id == "b"));
+    }
+
+    #[test]
+    fn scan_vaults_to_files_end_to_end() {
         let dir = temp_dir("e2e");
         std::fs::write(dir.join("Super Mario World (USA).sfc"), b"rom").unwrap();
         std::fs::write(dir.join("Super Mario World (Europe).sfc"), b"rom").unwrap();
 
-        let catalog = scan_vault_to_catalog(&dir);
+        let vault = vault("snes-vault", "snes", dir.to_str().unwrap(), None);
+        let files = scan_vaults_to_files(&[vault]);
         std::fs::remove_dir_all(&dir).ok();
 
-        let catalog = catalog.expect("scan succeeds");
+        let files = files.expect("scan succeeds");
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|f| f.vault_id == "snes-vault"));
+
+        // Both regional dumps collapse under one Game once reconciled.
+        let catalog = build_catalog(&files);
         assert_eq!(catalog.games.len(), 1);
         assert_eq!(catalog.releases.len(), 2);
     }
