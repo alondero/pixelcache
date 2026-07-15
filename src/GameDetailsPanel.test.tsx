@@ -86,7 +86,8 @@ describe("GameDetailsPanel", () => {
     // The first (primary) release is highlighted initially and has a video.
     const video = previewVideo();
     expect(video).not.toBeNull();
-    expect(video?.src).toContain("star-fox-64/preview.webm");
+    // The preview is served over the media protocol, addressed by release + slot.
+    expect(video?.src).toContain("star-fox-64-ntsc/video");
     // Muted looping autoplay is what WebViews allow without a user gesture.
     expect(video).toHaveAttribute("autoplay");
     expect(video).toHaveAttribute("loop");
@@ -102,7 +103,31 @@ describe("GameDetailsPanel", () => {
     const image = screen.getByRole("img", { name: /lylat wars/i });
     expect(image).toHaveAttribute(
       "src",
-      expect.stringContaining("star-fox-64/cover.webp"),
+      expect.stringContaining("lylat-wars-pal/image"),
+    );
+  });
+
+  it("uses game-level media when the highlighted release has none", async () => {
+    const user = userEvent.setup();
+    render(
+      <GameDetailsPanel
+        title="Star Fox 64"
+        releases={releases}
+        gameMedia={{ boxart: "star-fox-64/box.png" }}
+        onLaunch={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // The hack release sets no media of its own, so it inherits the game's boxart.
+    await user.hover(
+      screen.getByRole("button", { name: /play star fox 64 hack/i }),
+    );
+
+    const image = screen.getByRole("img", { name: /star fox 64 hack/i });
+    expect(image).toHaveAttribute(
+      "src",
+      expect.stringContaining("star-fox-64-hack/boxart"),
     );
   });
 

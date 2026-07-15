@@ -1,6 +1,7 @@
 import type { RefObject } from "react";
 import type { GameCardInfo } from "./catalogView";
 import { GRID_CSS_VARS } from "./gridLayout";
+import { mediaSrc } from "./media";
 
 interface GameGridProps {
   /** The cards to render, already derived and filtered/sorted by the caller. */
@@ -42,6 +43,20 @@ function GameGrid({
           onClick={() => onSelectGame(card.game.id)}
           onFocus={() => focusItem(index)}
         >
+          {card.cover ? (
+            <img
+              className="game-card-cover"
+              src={mediaSrc(card.cover.releaseId, card.cover.slot)}
+              alt=""
+              aria-hidden="true"
+              loading="lazy"
+            />
+          ) : (
+            <span
+              className="game-card-cover game-card-cover-empty"
+              aria-hidden="true"
+            />
+          )}
           <span className="game-card-title">{card.title}</span>
           <span className="game-card-meta">
             {card.releaseCount} release{card.releaseCount === 1 ? "" : "s"}

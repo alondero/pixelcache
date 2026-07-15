@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   gameCardInfos,
-  mediaUrl,
   peerReleases,
   primaryReleaseTitle,
 } from "./catalogView";
@@ -130,11 +129,36 @@ describe("peerReleases", () => {
   });
 });
 
-describe("mediaUrl", () => {
-  it("resolves a catalog-relative media path under the media root", () => {
-    expect(mediaUrl("star-fox-64/preview.webm")).toBe(
-      "media/star-fox-64/preview.webm",
-    );
+describe("gameCardInfos covers", () => {
+  it("derives a still cover from the primary release, ignoring video", () => {
+    const data = catalog();
+    data.releases[0].media = {
+      video: "star-fox-64/preview.webm",
+      image: "star-fox-64/cover.webp",
+    };
+    const cards = gameCardInfos(data);
+    const starFox = cards.find((c) => c.game.id === "star-fox-64");
+    // The card cover is a still (image), never the moving video preview.
+    expect(starFox?.cover).toEqual({
+      releaseId: "star-fox-64-ntsc",
+      slot: "image",
+    });
+  });
+
+  it("falls back to the game's media when the primary release has none", () => {
+    const data = catalog();
+    data.games[1].media = { boxart: "metroid/box.png" };
+    const cards = gameCardInfos(data);
+    const metroid = cards.find((c) => c.game.id === "metroid");
+    expect(metroid?.cover).toEqual({
+      releaseId: "metroid-ntsc",
+      slot: "boxart",
+    });
+  });
+
+  it("leaves the cover undefined when there is no still artwork", () => {
+    const cards = gameCardInfos(catalog());
+    expect(cards.every((c) => c.cover === undefined)).toBe(true);
   });
 });
 

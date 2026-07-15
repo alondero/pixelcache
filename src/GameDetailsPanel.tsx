@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { Release } from "./catalog";
-import { mediaUrl } from "./catalogView";
+import type { Media, Release } from "./catalog";
+import { mediaSrc, previewSource, resolveMedia } from "./media";
 import { useGridFocus } from "./useGridFocus";
 
 interface GameDetailsPanelProps {
@@ -9,6 +9,8 @@ interface GameDetailsPanelProps {
   developer?: string;
   /** The game's peer Releases, primary first (see `peerReleases`). */
   releases: Release[];
+  /** Game-level fallback media, filling slots a highlighted Release leaves unset. */
+  gameMedia?: Media;
   onLaunch: (release: Release) => void;
   onClose: () => void;
 }
@@ -33,6 +35,7 @@ function GameDetailsPanel({
   title,
   developer,
   releases,
+  gameMedia,
   onLaunch,
   onClose,
 }: GameDetailsPanelProps) {
@@ -53,8 +56,17 @@ function GameDetailsPanel({
   });
 
   const highlighted = releases[highlightedIndex];
-  const video = highlighted?.media?.video;
-  const image = highlighted?.media?.image;
+  // Resolve the highlighted release's artwork against the game-level fallback,
+  // then pick the best preview (moving video, else a still). The protocol URL is
+  // built from the release id + winning slot; the backend serves the actual file.
+  const resolved = highlighted
+    ? resolveMedia(highlighted.media, gameMedia)
+    : {};
+  const preview = highlighted ? previewSource(resolved) : null;
+  const previewUrl =
+    highlighted && preview ? mediaSrc(highlighted.id, preview.slot) : null;
+  const videoUrl = preview?.kind === "video" ? previewUrl : null;
+  const imageUrl = preview?.kind === "image" ? previewUrl : null;
 
   // Stop and discard the previously highlighted stream when the source
   // changes. Without this, the browser keeps playing the old `<video>` while
@@ -64,11 +76,11 @@ function GameDetailsPanel({
   useEffect(() => {
     const node = previewVideoRef.current;
     const previous = previousVideoSrc.current;
-    if (node && previous !== null && previous !== video) {
+    if (node && previous !== null && previous !== videoUrl) {
       node.pause();
     }
-    previousVideoSrc.current = video ?? null;
-  }, [video]);
+    previousVideoSrc.current = videoUrl ?? null;
+  }, [videoUrl]);
 
   return (
     <div className="details-backdrop">
@@ -99,7 +111,7 @@ function GameDetailsPanel({
         </header>
 
         <div className="release-preview">
-          {video ? (
+          {videoUrl ? (
             // Reusing one <video> across highlight changes keeps the element
             // around for transitions; the matching `useEffect` above explicitly
             // pauses the previous stream when the source changes, so two
@@ -108,17 +120,17 @@ function GameDetailsPanel({
             <video
               data-testid="release-preview-video"
               className="release-preview-media"
-              src={mediaUrl(video)}
+              src={videoUrl}
               autoPlay
               muted
               loop
               playsInline
               ref={previewVideoRef}
             />
-          ) : image ? (
+          ) : imageUrl ? (
             <img
               className="release-preview-media"
-              src={mediaUrl(image)}
+              src={imageUrl}
               alt={`${highlighted.title} cover art`}
             />
           ) : (
