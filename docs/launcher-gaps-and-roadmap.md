@@ -88,6 +88,34 @@ power more filters.
 
 ## This session
 
+Implemented **Phase 2 — Launch configuration.** The Deck model grew from
+"one Deck per platform, ROM always appended last" to a configurable launch
+engine:
+
+- **ROM placeholder.** `Deck.arguments` may contain a `{rom}` / `{file}` token,
+  substituted in place by `resolve_release_spec` so mid-command invocations
+  (`retroarch -L core "{rom}"`, `duckstation -- "{file}"`) are expressible. With
+  no placeholder the ROM is still appended last, so existing catalogs are
+  unchanged.
+- **Direct launch.** A `DeckKind::DirectLaunch` Deck runs the Release file
+  *itself* (a PC `.exe` or self-contained app) — the resolved ROM path becomes
+  the program.
+- **Multiple Decks per platform.** Decks carry a `default` flag and a Release can
+  set a `deckId` override; `launch_release` also takes an explicit launch-time
+  `deckId`. `select_deck` resolves the precedence (explicit → Release → default →
+  first).
+- **Decks settings screen.** A new "Settings" tab (`src/DecksView.tsx` +
+  the pure `src/decks.ts`) lists Decks by platform and supports add / edit /
+  delete / make-default / test-launch, persisted via the `save_decks` command;
+  `test_launch_deck` spawns a Deck's emulator so it can be verified before a game
+  depends on it.
+- **Scanner seeding.** `apply_scan` now seeds a placeholder default Deck per
+  discovered platform (best-guess emulator command via
+  `default_emulator_for_platform`), so a freshly scanned library is launchable —
+  or one edit away — instead of erroring with "no deck configured".
+
+### Previous sessions
+
 Implemented **Phase 1 — Search & filtering** (see `src/gamesFilter.ts`,
 `src/GamesFilterBar.tsx`, and the Games view wiring). Search matches a game's
 title, any of its peer Releases' titles, and its developer; platform and

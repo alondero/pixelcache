@@ -515,3 +515,230 @@
   font-size: 0.75rem;
   color: rgba(255, 255, 255, 0.55);
 }
+
+/* ---- Decks settings screen (Phase 2: launch configuration) ---- */
+
+.decks-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: 100%;
+  text-align: left;
+}
+
+.decks-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.decks-lead {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.decks-lead code,
+.deck-preview code,
+.deck-row-cmd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.decks-lead code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #cdd3ff;
+}
+
+.decks-add {
+  flex-shrink: 0;
+  padding: 0.6rem 1.2rem;
+  font-size: 0.9rem;
+}
+
+.deck-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.1rem 1.2rem;
+  border-radius: 14px;
+  border: 1px solid rgba(169, 180, 255, 0.35);
+  background: rgba(88, 101, 242, 0.1);
+}
+
+.deck-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.deck-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.deck-field-wide {
+  grid-column: 1 / -1;
+}
+
+.deck-field-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.deck-preview {
+  margin: 0;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.deck-preview-label {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.deck-preview code {
+  color: #cdd3ff;
+}
+
+.deck-form-error {
+  color: #ffb4c4;
+}
+
+.deck-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.decks-apply {
+  padding: 0.6rem 1.4rem;
+  font-size: 0.9rem;
+}
+
+.deck-editor-actions .launch-button.secondary {
+  padding: 0.6rem 1.2rem;
+  font-size: 0.9rem;
+}
+
+.deck-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.deck-group-title {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(169, 180, 255, 0.8);
+}
+
+.deck-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.deck-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.deck-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.deck-row-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #fff;
+}
+
+.deck-badge {
+  padding: 0.05rem 0.45rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  color: #0b0d12;
+  background: #a9b4ff;
+}
+
+.deck-badge-alt {
+  color: #fff;
+  background: rgba(235, 69, 158, 0.55);
+}
+
+.deck-row-cmd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.deck-row-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.deck-action {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.deck-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.deck-action:focus-visible {
+  outline: 2px solid #a9b4ff;
+  outline-offset: 2px;
+}
+
+.deck-action:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.deck-action-danger:hover:not(:disabled) {
+  background: rgba(235, 69, 158, 0.25);
+  color: #fff;
+}

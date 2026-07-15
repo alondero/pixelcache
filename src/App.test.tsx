@@ -93,24 +93,35 @@ function mockInvoke({
   launch = () => Promise.resolve({ program: "notepad.exe", pid: 4242 }),
   scan = () => Promise.resolve(scannedCatalog),
   launchRelease = () => Promise.resolve({ program: "mupen64plus", pid: 777 }),
+  saveDecks = (decks: unknown) => Promise.resolve({ ...sampleCatalog, decks }),
+  testDeck = () => Promise.resolve({ program: "retroarch", pid: 555 }),
 }: {
   catalog?: () => Promise<unknown>;
   launch?: () => Promise<unknown>;
   scan?: () => Promise<unknown>;
   launchRelease?: (releaseId: string) => Promise<unknown>;
+  saveDecks?: (decks: unknown) => Promise<unknown>;
+  testDeck?: (deck: unknown) => Promise<unknown>;
 } = {}) {
   // Promises are constructed lazily (inside the mock implementation, not as
   // default-parameter values) so a rejection isn't created until `invoke` is
   // actually called with that command — otherwise vitest reports it as an
   // unhandled rejection even though the test does eventually await it.
-  invoke.mockImplementation((command: string, args?: { releaseId: string }) => {
-    if (command === "load_catalog") return catalog();
-    if (command === "launch_test_game") return launch();
-    if (command === "scan_vault") return scan();
-    if (command === "launch_release")
-      return launchRelease(args?.releaseId ?? "");
-    throw new Error(`unexpected invoke command: ${command}`);
-  });
+  invoke.mockImplementation(
+    (
+      command: string,
+      args?: { releaseId?: string; decks?: unknown; deck?: unknown },
+    ) => {
+      if (command === "load_catalog") return catalog();
+      if (command === "launch_test_game") return launch();
+      if (command === "scan_vault") return scan();
+      if (command === "launch_release")
+        return launchRelease(args?.releaseId ?? "");
+      if (command === "save_decks") return saveDecks(args?.decks);
+      if (command === "test_launch_deck") return testDeck(args?.deck);
+      throw new Error(`unexpected invoke command: ${command}`);
+    },
+  );
 }
 
 describe("App", () => {
@@ -487,5 +498,99 @@ describe("App", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       /launch failed: no deck configured for platform/i,
     );
+  });
+
+  // --- Settings / Decks screen (Phase 2: launch configuration) ---------------
+
+  const decksCatalog: Catalog = {
+    ...sampleCatalog,
+    decks: [
+      {
+        id: "n64-mupen",
+        platform: "n64",
+        executablePath: "mupen64plus",
+        arguments: ["--fullscreen"],
+        default: true,
+      },
+    ],
+  };
+
+  it("switches to Settings and lists configured decks", async () => {
+    mockInvoke({ catalog: () => Promise.resolve(decksCatalog) });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /settings/i }));
+
+    expect(screen.getByText("n64-mupen")).toBeInTheDocument();
+    // The command preview substitutes <rom> for the appended ROM path.
+    expect(
+      screen.getByText(/mupen64plus --fullscreen <rom>/i),
+    ).toBeInTheDocument();
+  });
+
+  it("adds a deck via save_decks and refreshes from the returned catalog", async () => {
+    const saveDecks = vi.fn((decks: unknown) =>
+      Promise.resolve({ ...decksCatalog, decks }),
+    );
+    mockInvoke({ catalog: () => Promise.resolve(decksCatalog), saveDecks });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /settings/i }));
+    await user.click(screen.getByRole("button", { name: /add deck/i }));
+
+    await user.clear(screen.getByRole("textbox", { name: /deck id/i }));
+    await user.type(
+      screen.getByRole("textbox", { name: /deck id/i }),
+      "snes9x",
+    );
+    await user.type(screen.getByRole("textbox", { name: /platform/i }), "snes");
+    await user.type(
+      screen.getByRole("textbox", { name: /executable/i }),
+      "snes9x",
+    );
+
+    await user.click(screen.getByRole("button", { name: /^add deck$/i }));
+
+    await waitFor(() => expect(saveDecks).toHaveBeenCalled());
+    const savedDecks = saveDecks.mock.calls[0][0] as { id: string }[];
+    expect(savedDecks.map((d) => d.id)).toContain("snes9x");
+  });
+
+  it("test-launches a deck via the test_launch_deck command", async () => {
+    const testDeck = vi
+      .fn()
+      .mockResolvedValue({ program: "mupen64plus", pid: 999 });
+    mockInvoke({ catalog: () => Promise.resolve(decksCatalog), testDeck });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /settings/i }));
+    await user.click(screen.getByRole("button", { name: /^test$/i }));
+
+    await waitFor(() => expect(testDeck).toHaveBeenCalled());
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /test launched mupen64plus \(pid 999\)/i,
+    );
+  });
+
+  it("deletes a deck through save_decks", async () => {
+    const saveDecks = vi.fn((decks: unknown) =>
+      Promise.resolve({ ...decksCatalog, decks }),
+    );
+    mockInvoke({ catalog: () => Promise.resolve(decksCatalog), saveDecks });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /settings/i }));
+    await user.click(screen.getByRole("button", { name: /delete/i }));
+
+    // The only deck is removed, so save_decks persists an empty deck set.
+    await waitFor(() => expect(saveDecks).toHaveBeenCalledWith([]));
   });
 });

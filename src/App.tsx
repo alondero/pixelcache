@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Catalog } from "./catalog";
 import GamesView from "./GamesView";
 import PlaylistsView from "./PlaylistsView";
+import DecksView from "./DecksView";
 import "./App.css";
 
 type CatalogStatus =
@@ -11,11 +12,12 @@ type CatalogStatus =
   | { kind: "error"; message: string };
 
 /** The top-level screens the user can switch between. */
-type Tab = "games" | "playlists";
+type Tab = "games" | "playlists" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "games", label: "Games" },
   { id: "playlists", label: "Playlists" },
+  { id: "settings", label: "Settings" },
 ];
 
 function App() {
@@ -73,6 +75,14 @@ function App() {
         )}
         {catalog && activeTab === "playlists" && (
           <PlaylistsView catalog={catalog} />
+        )}
+        {catalog && activeTab === "settings" && (
+          <DecksView
+            catalog={catalog}
+            onCatalogChange={(next) =>
+              setCatalogStatus({ kind: "loaded", catalog: next })
+            }
+          />
         )}
         {catalogStatus.kind === "error" && (
           <p className="status" role="alert">

@@ -54,6 +54,12 @@ pub struct Release {
     /// or one relative to the process working directory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault_id: Option<String>,
+    /// An optional per-Release [`Deck`] override, chosen by id. When set, this
+    /// Release launches under that specific Deck instead of its platform's
+    /// default — e.g. running one hack under a different core. When absent the
+    /// launch engine falls back to the platform's default Deck.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deck_id: Option<String>,
     pub file_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<Media>,
@@ -71,15 +77,62 @@ pub struct Game {
     pub relations: Vec<String>,
 }
 
+/// How a [`Deck`] turns a [`Release`] into a launchable process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeckKind {
+    /// Run the Release file through a separate emulator or interpreter named by
+    /// [`Deck::executable_path`]. The ROM path is supplied via a `{rom}` / `{file}`
+    /// argument placeholder, or appended as the final argument when no placeholder
+    /// is present. The default when a Deck omits `kind` (backward compatible).
+    #[default]
+    Emulator,
+    /// Run the Release file *itself* — a PC game `.exe` or any self-contained
+    /// executable. The resolved ROM path becomes the program and
+    /// [`Deck::executable_path`] is unused.
+    DirectLaunch,
+}
+
+impl DeckKind {
+    /// Whether this is the default kind; used by `skip_serializing_if` so a plain
+    /// emulator Deck omits `kind` from `catalog.json`.
+    fn is_emulator(&self) -> bool {
+        matches!(self, DeckKind::Emulator)
+    }
+}
+
+/// `skip_serializing_if` predicate for `bool` fields that default to `false`.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// The execution environment configuration used to run a [`Release`].
+///
+/// A platform may have several Decks — a default emulator plus alternatives (a
+/// different core, a direct launch). The Deck marked [`Deck::is_default`] is
+/// chosen for a platform unless a [`Release::deck_id`] or an explicit launch-time
+/// choice overrides it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Deck {
     pub id: String,
     pub platform: String,
+    /// The emulator/interpreter to run for a [`DeckKind::Emulator`] Deck. Unused
+    /// (and typically empty) for a [`DeckKind::DirectLaunch`] Deck, so it defaults
+    /// and is omitted from JSON when blank.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub executable_path: String,
     #[serde(default)]
     pub arguments: Vec<String>,
+    /// How this Deck launches: through an emulator (default) or by running the
+    /// Release file directly.
+    #[serde(default, skip_serializing_if = "DeckKind::is_emulator")]
+    pub kind: DeckKind,
+    /// Whether this is the platform's default Deck. Among several Decks for one
+    /// platform, the default is chosen at launch unless overridden. Serialised as
+    /// `default`; omitted when `false`.
+    #[serde(default, rename = "default", skip_serializing_if = "is_false")]
+    pub is_default: bool,
 }
 
 /// A player-curated collection of specific [`Release`]s, browsable and launchable
@@ -232,6 +285,40 @@ pub fn load_bundled_catalog(app: &tauri::AppHandle) -> Result<Catalog, String> {
 #[tauri::command]
 pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
     load_bundled_catalog(&app)
+}
+
+/// Serialise `catalog` to the app data directory, where [`load_bundled_catalog`]
+/// prefers it over the bundled resource on the next load. This is the same
+/// destination the Import Scanner writes to, so a settings edit and a rescan both
+/// persist to the one catalog the user is actually viewing.
+fn persist_catalog(app: &tauri::AppHandle, catalog: &Catalog) -> Result<(), String> {
+    use tauri::Manager;
+
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join(CATALOG_FILE_NAME);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create data dir '{}': {e}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(catalog)
+        .map_err(|e| format!("failed to serialize catalog: {e}"))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("failed to write catalog '{}': {e}", path.display()))
+}
+
+/// Tauri command backing the Decks settings screen: replace the catalog's Decks
+/// with `decks`, persist the updated catalog, and return it so the whole app
+/// refreshes. Everything else in the catalog (Games, Releases, Playlists, Vaults)
+/// is preserved — only the Deck set changes.
+#[tauri::command]
+pub async fn save_decks(app: tauri::AppHandle, decks: Vec<Deck>) -> Result<Catalog, String> {
+    let mut catalog = load_bundled_catalog(&app)?;
+    catalog.decks = decks;
+    persist_catalog(&app, &catalog)?;
+    Ok(catalog)
 }
 
 #[cfg(test)]
@@ -405,6 +492,97 @@ mod tests {
         // A manual Release (no vault) omits the field when re-serialised.
         let json = serde_json::to_string(&catalog.releases[1]).expect("serialisable");
         assert!(!json.contains("vaultId"), "json was: {json}");
+    }
+
+    #[test]
+    fn deck_kind_and_default_flag_default_when_absent() {
+        // A pre-Phase-2 Deck omits `kind` and `default`: it reads as an emulator
+        // deck that is not the platform default.
+        let catalog = Catalog::from_json(
+            r#"{
+                "decks": [
+                    {"id": "d", "platform": "snes", "executablePath": "snes9x"}
+                ]
+            }"#,
+        )
+        .expect("valid catalog json");
+        let deck = &catalog.decks[0];
+        assert_eq!(deck.kind, DeckKind::Emulator);
+        assert!(!deck.is_default);
+    }
+
+    #[test]
+    fn parses_deck_kind_default_flag_and_omitted_executable() {
+        // A direct-launch deck names no executable; `default` marks it primary.
+        let catalog = Catalog::from_json(
+            r#"{
+                "decks": [
+                    {"id": "pc", "platform": "pc", "kind": "directLaunch", "default": true}
+                ]
+            }"#,
+        )
+        .expect("valid catalog json");
+        let deck = &catalog.decks[0];
+        assert_eq!(deck.kind, DeckKind::DirectLaunch);
+        assert!(deck.is_default);
+        assert_eq!(deck.executable_path, "");
+    }
+
+    #[test]
+    fn deck_omits_default_and_kind_when_serialising_a_plain_emulator() {
+        // A plain emulator deck round-trips without noise: no `kind`, no `default`.
+        let deck = Deck {
+            id: "d".to_string(),
+            platform: "snes".to_string(),
+            executable_path: "snes9x".to_string(),
+            arguments: vec![],
+            kind: DeckKind::Emulator,
+            is_default: false,
+        };
+        let json = serde_json::to_string(&deck).expect("serialisable");
+        assert!(!json.contains("kind"), "json was: {json}");
+        assert!(!json.contains("default"), "json was: {json}");
+        assert!(json.contains("snes9x"), "json was: {json}");
+    }
+
+    #[test]
+    fn direct_launch_deck_omits_empty_executable_but_keeps_kind() {
+        let deck = Deck {
+            id: "pc".to_string(),
+            platform: "pc".to_string(),
+            executable_path: String::new(),
+            arguments: vec![],
+            kind: DeckKind::DirectLaunch,
+            is_default: true,
+        };
+        let json = serde_json::to_string(&deck).expect("serialisable");
+        assert!(!json.contains("executablePath"), "json was: {json}");
+        assert!(
+            json.contains("\"kind\":\"directLaunch\""),
+            "json was: {json}"
+        );
+        assert!(json.contains("\"default\":true"), "json was: {json}");
+    }
+
+    #[test]
+    fn release_deck_id_round_trips_and_defaults() {
+        let catalog = Catalog::from_json(
+            r#"{
+                "releases": [
+                    {"id": "a", "gameId": "g", "title": "A", "platform": "snes",
+                     "releaseType": "hack", "deckId": "snes-alt", "filePath": "A.sfc"},
+                    {"id": "b", "gameId": "g", "title": "B", "platform": "snes",
+                     "releaseType": "retail", "filePath": "B.sfc"}
+                ]
+            }"#,
+        )
+        .expect("valid catalog json");
+        assert_eq!(catalog.releases[0].deck_id.as_deref(), Some("snes-alt"));
+        assert_eq!(catalog.releases[1].deck_id, None);
+
+        // A Release with no override omits the field when re-serialised.
+        let json = serde_json::to_string(&catalog.releases[1]).expect("serialisable");
+        assert!(!json.contains("deckId"), "json was: {json}");
     }
 
     #[test]
