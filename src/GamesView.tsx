@@ -200,6 +200,7 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
           title={selectedTitle}
           developer={selectedGame.developer}
           releases={selectedReleases}
+          gameMedia={selectedGame.media}
           onLaunch={launchRelease}
           onClose={() => setSelectedGameId(null)}
         />

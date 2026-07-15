@@ -7,9 +7,20 @@
 export type ReleaseType =
   "retail" | "beta" | "hack" | "translation" | "homebrew";
 
+/**
+ * Artwork and preview paths for a Release or, as a fallback, its Game. Each slot
+ * is independent and resolved by the media protocol against the owning Release's
+ * Vault (see `src/media.ts`). `image` stays the generic cover it always was.
+ * Mirrors the Rust `Media` struct in `src-tauri/src/catalog.rs`.
+ */
 export interface Media {
   video?: string;
   image?: string;
+  logo?: string;
+  marquee?: string;
+  screenshot?: string;
+  boxart?: string;
+  fanart?: string;
 }
 
 /** A specific playable version of a Game — a region, revision, hack, or port. */
@@ -43,6 +54,11 @@ export interface Game {
   developer?: string;
   primaryReleaseId: string;
   relations: string[];
+  /**
+   * Game-level fallback artwork. A Release whose own `media` leaves a slot unset
+   * inherits that slot from here (see `resolveMedia` in `src/media.ts`).
+   */
+  media?: Media;
 }
 
 /**

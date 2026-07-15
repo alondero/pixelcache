@@ -4,6 +4,7 @@ import type { Catalog } from "./catalog";
 import GamesView from "./GamesView";
 import PlaylistsView from "./PlaylistsView";
 import DecksView from "./DecksView";
+import MediaView from "./MediaView";
 import "./App.css";
 
 type CatalogStatus =
@@ -12,11 +13,12 @@ type CatalogStatus =
   | { kind: "error"; message: string };
 
 /** The top-level screens the user can switch between. */
-type Tab = "games" | "playlists" | "settings";
+type Tab = "games" | "playlists" | "media" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "games", label: "Games" },
   { id: "playlists", label: "Playlists" },
+  { id: "media", label: "Media" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -75,6 +77,14 @@ function App() {
         )}
         {catalog && activeTab === "playlists" && (
           <PlaylistsView catalog={catalog} />
+        )}
+        {catalog && activeTab === "media" && (
+          <MediaView
+            catalog={catalog}
+            onCatalogChange={(next) =>
+              setCatalogStatus({ kind: "loaded", catalog: next })
+            }
+          />
         )}
         {catalog && activeTab === "settings" && (
           <DecksView

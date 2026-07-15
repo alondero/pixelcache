@@ -88,33 +88,47 @@ power more filters.
 
 ## This session
 
-Implemented **Phase 2 — Launch configuration.** The Deck model grew from
-"one Deck per platform, ROM always appended last" to a configurable launch
-engine:
+Implemented **Phase 3 — Media.** Media grew from "one `image` + one `video` per
+Release, served from the frontend `media/` root" to the richer artwork set
+established launchers use, served from the Vault:
 
-- **ROM placeholder.** `Deck.arguments` may contain a `{rom}` / `{file}` token,
-  substituted in place by `resolve_release_spec` so mid-command invocations
-  (`retroarch -L core "{rom}"`, `duckstation -- "{file}"`) are expressible. With
-  no placeholder the ROM is still appended last, so existing catalogs are
+- **Expanded `Media`.** Added `logo`, `marquee`, `screenshot`, `boxart`, and
+  `fanart` alongside the existing `image` / `video` slots, in both the Rust
+  `catalog::Media` struct and its `src/catalog.ts` mirror. Every slot is
+  optional and omitted from JSON when unset, so pre-Phase-3 catalogs are
   unchanged.
-- **Direct launch.** A `DeckKind::DirectLaunch` Deck runs the Release file
-  *itself* (a PC `.exe` or self-contained app) — the resolved ROM path becomes
-  the program.
-- **Multiple Decks per platform.** Decks carry a `default` flag and a Release can
-  set a `deckId` override; `launch_release` also takes an explicit launch-time
-  `deckId`. `select_deck` resolves the precedence (explicit → Release → default →
-  first).
-- **Decks settings screen.** A new "Settings" tab (`src/DecksView.tsx` +
-  the pure `src/decks.ts`) lists Decks by platform and supports add / edit /
-  delete / make-default / test-launch, persisted via the `save_decks` command;
-  `test_launch_deck` spawns a Deck's emulator so it can be verified before a game
-  depends on it.
-- **Scanner seeding.** `apply_scan` now seeds a placeholder default Deck per
-  discovered platform (best-guess emulator command via
-  `default_emulator_for_platform`), so a freshly scanned library is launchable —
-  or one edit away — instead of erroring with "no deck configured".
+- **Game-level fallback.** `Game` gained an optional `media` object; a Release
+  that leaves a slot unset inherits it from its Game. The rule lives once in the
+  pure `media::resolved_slot` (backend) and `resolveMedia` (`src/media.ts`,
+  frontend), so a shared logo or box art can be set on the Game instead of on
+  every regional Release.
+- **Vault asset protocol.** A `pixelcache-media://` URI scheme (registered in
+  `lib.rs`, handled by `media::respond`) streams a Release + slot's file from
+  the Release's Vault, falling back to `PIXELCACHE_MEDIA_DIR` and finally the
+  bundled resource `media/` directory (where the demo catalog's artwork now
+  ships). The frontend addresses artwork by `mediaSrc(releaseId, slot)` rather
+  than a hand-built `media/` path. Path resolution, MIME guessing, and request
+  parsing are pure and unit-tested; only the file read touches disk.
+- **Media everywhere it's shown.** Game cards now render a still cover
+  (`GameGrid`), and the details panel resolves the highlighted Release's preview
+  through the fallback, both over the protocol.
+- **Media settings screen.** A new "Media" tab (`src/MediaView.tsx` + the pure
+  `src/media.ts`) assigns artwork per Release or per Game (as a fallback),
+  persisted via the `save_media` command (with the pure `catalog::apply_media` /
+  `setReleaseMedia` / `setGameMedia` update rules). Automatic scraping stays
+  deferred per the "no automatic scraping in MVP" ADR.
 
 ### Previous sessions
+
+Implemented **Phase 2 — Launch configuration.** The Deck model grew from
+"one Deck per platform, ROM always appended last" to a configurable launch
+engine: a `{rom}` / `{file}` argument placeholder substituted by
+`resolve_release_spec` (append-last when absent), a `DeckKind::DirectLaunch`
+kind that runs the Release file itself, multiple Decks per platform with a
+`default` flag and a `Release.deckId` override resolved by `select_deck`, a Decks
+"Settings" tab (`src/DecksView.tsx` + pure `src/decks.ts`) persisting via
+`save_decks` with a `test_launch_deck` action, and scanner seeding of a
+placeholder default Deck per discovered platform.
 
 Implemented **Phase 1 — Search & filtering** (see `src/gamesFilter.ts`,
 `src/GamesFilterBar.tsx`, and the Games view wiring). Search matches a game's

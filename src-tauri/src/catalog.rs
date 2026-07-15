@@ -23,7 +23,17 @@ pub enum ReleaseType {
     Homebrew,
 }
 
-/// Optional preview media paths for a [`Release`], shown on hover per the PRD.
+/// Artwork and preview paths for a [`Release`] or, as a fallback, its [`Game`].
+///
+/// Every slot is an optional path resolved by the launcher's media protocol
+/// against the owning Release's [`Vault`] (see [`crate::media`]). The MVP grew
+/// from a single `image` + `video` to the artwork set established launchers use
+/// (clear logo, marquee, screenshot, box art, fanart); each slot is independent,
+/// and a slot left unset on a Release falls back to the same slot on its Game
+/// ([`Media::slot`] + [`crate::media::resolved_slot`]).
+///
+/// `image` stays the generic cover / primary still it always was, kept first for
+/// backward compatibility with pre-Phase-3 catalogs.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Media {
@@ -31,6 +41,47 @@ pub struct Media {
     pub video: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marquee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boxart: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fanart: Option<String>,
+}
+
+/// The media slots in a stable order, used by the media protocol to validate a
+/// requested slot name and by tests to iterate every field. Mirrors the frontend
+/// `MEDIA_SLOTS` in `src/media.ts`.
+pub const MEDIA_SLOTS: [&str; 7] = [
+    "video",
+    "image",
+    "logo",
+    "marquee",
+    "screenshot",
+    "boxart",
+    "fanart",
+];
+
+impl Media {
+    /// The path stored in `slot`, or `None` for an unset slot or an unknown slot
+    /// name. The single place mapping a slot string to its field, shared by the
+    /// media protocol's per-slot lookup.
+    pub fn slot(&self, slot: &str) -> Option<&str> {
+        match slot {
+            "video" => self.video.as_deref(),
+            "image" => self.image.as_deref(),
+            "logo" => self.logo.as_deref(),
+            "marquee" => self.marquee.as_deref(),
+            "screenshot" => self.screenshot.as_deref(),
+            "boxart" => self.boxart.as_deref(),
+            "fanart" => self.fanart.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// A specific playable version of a [`Game`] — a region, revision, hack, or port.
@@ -75,6 +126,11 @@ pub struct Game {
     pub primary_release_id: String,
     #[serde(default)]
     pub relations: Vec<String>,
+    /// Game-level fallback artwork. A [`Release`] whose own [`Release::media`]
+    /// leaves a slot unset inherits that slot from here, so shared box art or a
+    /// logo can be set once on the Game instead of on every regional Release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<Media>,
 }
 
 /// How a [`Deck`] turns a [`Release`] into a launchable process.
@@ -319,6 +375,52 @@ pub async fn save_decks(app: tauri::AppHandle, decks: Vec<Deck>) -> Result<Catal
     catalog.decks = decks;
     persist_catalog(&app, &catalog)?;
     Ok(catalog)
+}
+
+/// Apply a manual media assignment (from the Media settings screen) to the
+/// catalog: replace the media on one [`Release`] and/or one [`Game`], returning
+/// the mutated catalog so the whole app refreshes. A `None` media clears that
+/// target's assignment; a missing id is a no-op for that target rather than an
+/// error, so the frontend never has to keep ids perfectly in sync. Pure over its
+/// inputs so the update rule is unit-testable without touching disk.
+pub fn apply_media(
+    mut catalog: Catalog,
+    release: Option<(String, Option<Media>)>,
+    game: Option<(String, Option<Media>)>,
+) -> Catalog {
+    if let Some((release_id, media)) = release {
+        if let Some(target) = catalog.releases.iter_mut().find(|r| r.id == release_id) {
+            target.media = media;
+        }
+    }
+    if let Some((game_id, media)) = game {
+        if let Some(target) = catalog.games.iter_mut().find(|g| g.id == game_id) {
+            target.media = media;
+        }
+    }
+    catalog
+}
+
+/// Tauri command backing the Media settings screen: assign the media for one
+/// Release and/or its Game in a single persist, then return the updated catalog.
+/// Either target is optional so the screen can save a Release, a Game fallback,
+/// or both together; passing `null` media clears that target.
+#[tauri::command]
+pub async fn save_media(
+    app: tauri::AppHandle,
+    release_id: Option<String>,
+    release_media: Option<Media>,
+    game_id: Option<String>,
+    game_media: Option<Media>,
+) -> Result<Catalog, String> {
+    let catalog = load_bundled_catalog(&app)?;
+    let updated = apply_media(
+        catalog,
+        release_id.map(|id| (id, release_media)),
+        game_id.map(|id| (id, game_media)),
+    );
+    persist_catalog(&app, &updated)?;
+    Ok(updated)
 }
 
 #[cfg(test)]
@@ -583,6 +685,118 @@ mod tests {
         // A Release with no override omits the field when re-serialised.
         let json = serde_json::to_string(&catalog.releases[1]).expect("serialisable");
         assert!(!json.contains("deckId"), "json was: {json}");
+    }
+
+    #[test]
+    fn parses_the_expanded_media_slots() {
+        let catalog = Catalog::from_json(
+            r#"{
+                "releases": [
+                    {"id": "r", "gameId": "g", "title": "T", "platform": "snes",
+                     "releaseType": "retail", "filePath": "t.sfc",
+                     "media": {
+                        "video": "t/preview.webm", "image": "t/cover.webp",
+                        "logo": "t/logo.png", "marquee": "t/marquee.png",
+                        "screenshot": "t/shot.png", "boxart": "t/box.png",
+                        "fanart": "t/fan.jpg"
+                     }}
+                ]
+            }"#,
+        )
+        .expect("valid catalog json");
+        let media = catalog.releases[0].media.as_ref().expect("media present");
+        assert_eq!(media.slot("logo"), Some("t/logo.png"));
+        assert_eq!(media.slot("fanart"), Some("t/fan.jpg"));
+        assert_eq!(media.slot("boxart"), Some("t/box.png"));
+        // Every declared slot resolves; an unknown slot name is None.
+        assert!(MEDIA_SLOTS.iter().all(|s| media.slot(s).is_some()));
+        assert_eq!(media.slot("nope"), None);
+    }
+
+    #[test]
+    fn media_slot_returns_none_for_unset_slots() {
+        let media = Media {
+            image: Some("cover.webp".to_string()),
+            ..Media::default()
+        };
+        assert_eq!(media.slot("image"), Some("cover.webp"));
+        assert_eq!(media.slot("video"), None);
+        assert_eq!(media.slot("logo"), None);
+    }
+
+    #[test]
+    fn game_media_round_trips_and_defaults() {
+        let catalog = Catalog::from_json(
+            r#"{
+                "games": [
+                    {"id": "with", "primaryReleaseId": "r", "relations": [],
+                     "media": {"boxart": "with/box.png"}},
+                    {"id": "without", "primaryReleaseId": "r2", "relations": []}
+                ]
+            }"#,
+        )
+        .expect("valid catalog json");
+        assert_eq!(
+            catalog.games[0]
+                .media
+                .as_ref()
+                .and_then(|m| m.boxart.as_deref()),
+            Some("with/box.png")
+        );
+        assert_eq!(catalog.games[1].media, None);
+
+        // A game without media omits the field entirely when re-serialised.
+        let json = serde_json::to_string(&catalog.games[1]).expect("serialisable");
+        assert!(!json.contains("media"), "json was: {json}");
+    }
+
+    #[test]
+    fn apply_media_sets_release_and_game_targets() {
+        let catalog = Catalog::from_json(
+            r#"{
+                "games": [{"id": "g", "primaryReleaseId": "r", "relations": []}],
+                "releases": [{"id": "r", "gameId": "g", "title": "T",
+                              "platform": "snes", "releaseType": "retail", "filePath": "t.sfc"}]
+            }"#,
+        )
+        .expect("valid catalog json");
+
+        let release_media = Media {
+            image: Some("r/cover.webp".to_string()),
+            ..Media::default()
+        };
+        let game_media = Media {
+            boxart: Some("g/box.png".to_string()),
+            ..Media::default()
+        };
+        let updated = apply_media(
+            catalog,
+            Some(("r".to_string(), Some(release_media.clone()))),
+            Some(("g".to_string(), Some(game_media.clone()))),
+        );
+        assert_eq!(updated.releases[0].media.as_ref(), Some(&release_media));
+        assert_eq!(updated.games[0].media.as_ref(), Some(&game_media));
+    }
+
+    #[test]
+    fn apply_media_clears_with_none_and_ignores_unknown_ids() {
+        let catalog = Catalog::from_json(
+            r#"{
+                "releases": [{"id": "r", "gameId": "g", "title": "T", "platform": "snes",
+                              "releaseType": "retail", "filePath": "t.sfc",
+                              "media": {"image": "old.webp"}}]
+            }"#,
+        )
+        .expect("valid catalog json");
+
+        // Clearing a known release drops its media; an unknown game id is a no-op.
+        let updated = apply_media(
+            catalog,
+            Some(("r".to_string(), None)),
+            Some(("ghost".to_string(), Some(Media::default()))),
+        );
+        assert_eq!(updated.releases[0].media, None);
+        assert!(updated.games.is_empty());
     }
 
     #[test]
