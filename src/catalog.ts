@@ -28,6 +28,11 @@ export interface Release {
    * manually and `filePath` is used as-is.
    */
   vaultId?: string;
+  /**
+   * An optional per-Release Deck override, chosen by id. When set, this Release
+   * launches under that specific Deck instead of its platform's default.
+   */
+  deckId?: string;
   filePath: string;
   media?: Media;
 }
@@ -40,12 +45,29 @@ export interface Game {
   relations: string[];
 }
 
-/** The execution environment configuration used to run a Release. */
+/**
+ * How a Deck turns a Release into a launchable process: through a separate
+ * emulator (`emulator`, the default) or by running the Release file directly
+ * (`directLaunch`, for a PC game `.exe` or self-contained executable).
+ */
+export type DeckKind = "emulator" | "directLaunch";
+
+/**
+ * The execution environment configuration used to run a Release.
+ *
+ * A platform may have several Decks — a default emulator plus alternatives. The
+ * Deck marked `default` is chosen for a platform unless a `Release.deckId` or an
+ * explicit launch-time choice overrides it. `kind` and `default` are optional and
+ * default to `"emulator"` / `false` (matching the Rust serde defaults).
+ */
 export interface Deck {
   id: string;
   platform: string;
+  /** The emulator/interpreter to run; unused (and typically empty) for `directLaunch`. */
   executablePath: string;
   arguments: string[];
+  kind?: DeckKind;
+  default?: boolean;
 }
 
 /**

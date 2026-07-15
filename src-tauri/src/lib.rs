@@ -9,7 +9,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             launch::launch_test_game,
             launch::launch_release,
+            launch::test_launch_deck,
             catalog::load_catalog,
+            catalog::save_decks,
             scanner::scan_vault
         ])
         .run(tauri::generate_context!())

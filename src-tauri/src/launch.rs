@@ -25,11 +25,18 @@
 //! follows the [`crate::catalog::Deck`] configured for the Release's platform.
 //! Release file paths resolve against `PIXELCACHE_VAULT_DIR` when set.
 
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, Deck, DeckKind, Release};
 use serde::Serialize;
 use std::fmt;
 use std::path::Path;
 use std::process::Command;
+
+/// Argument tokens replaced with the resolved ROM path when building a launch
+/// spec. Either spelling works, so a Deck can read as `-L core "{rom}"` or
+/// `-- {file}`. When none appear in a Deck's arguments, the ROM path is appended
+/// as the final argument instead (the pre-Phase-2 behaviour, kept for backward
+/// compatibility).
+pub const ROM_PLACEHOLDERS: [&str; 2] = ["{rom}", "{file}"];
 
 /// Environment variable overriding the program to launch.
 pub const LAUNCH_CMD_ENV: &str = "PIXELCACHE_LAUNCH_CMD";
@@ -79,6 +86,12 @@ pub enum LaunchError {
     UnknownRelease { release_id: String },
     /// The Catalog has no Deck configured for the release's platform.
     NoDeckForPlatform { platform: String },
+    /// A Deck override (a [`Release::deck_id`] or an explicit launch-time choice)
+    /// referenced a Deck id that is not in the Catalog.
+    UnknownDeck { deck_id: String },
+    /// A test-launch was requested for a [`DeckKind::DirectLaunch`] Deck, which
+    /// has no emulator of its own to spawn without a Release.
+    NotTestable { deck_id: String },
 }
 
 impl fmt::Display for LaunchError {
@@ -93,6 +106,15 @@ impl fmt::Display for LaunchError {
             LaunchError::NoDeckForPlatform { platform } => {
                 write!(f, "no deck configured for platform '{platform}'")
             }
+            LaunchError::UnknownDeck { deck_id } => {
+                write!(f, "no deck '{deck_id}' in the catalog")
+            }
+            LaunchError::NotTestable { deck_id } => {
+                write!(
+                    f,
+                    "deck '{deck_id}' launches the game directly and has no emulator to test"
+                )
+            }
         }
     }
 }
@@ -101,7 +123,10 @@ impl std::error::Error for LaunchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             LaunchError::Spawn { source, .. } => Some(source),
-            LaunchError::UnknownRelease { .. } | LaunchError::NoDeckForPlatform { .. } => None,
+            LaunchError::UnknownRelease { .. }
+            | LaunchError::NoDeckForPlatform { .. }
+            | LaunchError::UnknownDeck { .. }
+            | LaunchError::NotTestable { .. } => None,
         }
     }
 }
@@ -169,23 +194,111 @@ fn resolve_from_env() -> LaunchSpec {
     )
 }
 
-/// Decide what to launch for a specific Release: the Deck configured for the
-/// release's platform provides the program and base arguments, and the
-/// release's `filePath` — resolved against the Vault it came from — is appended
-/// as the final argument.
+/// Substitute the ROM path into a Deck's arguments.
+///
+/// Every argument containing a [`ROM_PLACEHOLDERS`] token has that token replaced
+/// with `rom_path`; the returned flag reports whether *any* substitution
+/// happened, so the caller can decide whether to still append the ROM path (the
+/// backward-compatible "append last" behaviour when a Deck carries no
+/// placeholder). Pure.
+fn substitute_rom_placeholder(arguments: &[String], rom_path: &str) -> (Vec<String>, bool) {
+    let mut replaced = false;
+    let args = arguments
+        .iter()
+        .map(|arg| {
+            let mut out = arg.clone();
+            for token in ROM_PLACEHOLDERS {
+                if out.contains(token) {
+                    out = out.replace(token, rom_path);
+                    replaced = true;
+                }
+            }
+            out
+        })
+        .collect();
+    (args, replaced)
+}
+
+/// Choose the [`Deck`] a Release launches under.
+///
+/// Precedence: an explicit launch-time `deck_override`, then the Release's stored
+/// [`Release::deck_id`], then the platform's default Deck
+/// ([`crate::catalog::Deck::is_default`]), then simply the first Deck for the
+/// platform. An override naming a missing Deck is an error rather than a silent
+/// fall-through, so a typo surfaces instead of quietly launching the wrong core.
+fn select_deck<'a>(
+    catalog: &'a Catalog,
+    release: &Release,
+    deck_override: Option<&str>,
+) -> Result<&'a Deck, LaunchError> {
+    if let Some(id) = deck_override.or(release.deck_id.as_deref()) {
+        return catalog
+            .decks
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| LaunchError::UnknownDeck {
+                deck_id: id.to_string(),
+            });
+    }
+
+    let platform_decks: Vec<&Deck> = catalog
+        .decks
+        .iter()
+        .filter(|d| d.platform == release.platform)
+        .collect();
+    platform_decks
+        .iter()
+        .find(|d| d.is_default)
+        .or_else(|| platform_decks.first())
+        .copied()
+        .ok_or_else(|| LaunchError::NoDeckForPlatform {
+            platform: release.platform.clone(),
+        })
+}
+
+/// Resolve a Release's `filePath` to an absolute ROM path.
 ///
 /// A Release discovered by a scan carries a `vault_id`; its `filePath` resolves
 /// against that [`crate::catalog::Vault`]'s `path`. A manual Release (no
 /// `vault_id`) falls back to `fallback_root` (the [`VAULT_DIR_ENV`] override),
 /// and failing that is passed through as-is.
+fn resolve_rom_path(catalog: &Catalog, release: &Release, fallback_root: Option<&str>) -> String {
+    let vault_root = release
+        .vault_id
+        .as_deref()
+        .and_then(|id| catalog.vaults.iter().find(|v| v.id == id))
+        .map(|v| v.path.as_str())
+        .or(fallback_root);
+
+    match vault_root {
+        Some(root) if !root.trim().is_empty() => Path::new(root.trim())
+            .join(&release.file_path)
+            .to_string_lossy()
+            .into_owned(),
+        _ => release.file_path.clone(),
+    }
+}
+
+/// Decide what to launch for a specific Release.
 ///
-/// Pure over its inputs so every failure mode (unknown release, missing deck)
-/// and the exact argv ordering are unit-testable without spawning anything,
-/// per the PRD's "Process Launch Mocking" testing decision.
+/// The Deck chosen by [`select_deck`] decides *how* the resolved ROM path is
+/// used:
+///
+/// * A [`DeckKind::Emulator`] Deck runs its `executable_path`; the ROM path is
+///   substituted into any `{rom}` / `{file}` argument placeholder, or appended as
+///   the final argument when the Deck has none.
+/// * A [`DeckKind::DirectLaunch`] Deck runs the ROM path *as the program* (a PC
+///   game `.exe` or self-contained executable); its arguments still honour the
+///   placeholder but the ROM is never appended, since it is already the program.
+///
+/// Pure over its inputs so every failure mode (unknown release, missing deck,
+/// unknown override) and the exact argv ordering are unit-testable without
+/// spawning anything, per the PRD's "Process Launch Mocking" testing decision.
 pub fn resolve_release_spec(
     catalog: &Catalog,
     release_id: &str,
     fallback_root: Option<&str>,
+    deck_override: Option<&str>,
 ) -> Result<LaunchSpec, LaunchError> {
     let release = catalog
         .releases
@@ -195,38 +308,52 @@ pub fn resolve_release_spec(
             release_id: release_id.to_string(),
         })?;
 
-    let deck = catalog
-        .decks
-        .iter()
-        .find(|d| d.platform == release.platform)
-        .ok_or_else(|| LaunchError::NoDeckForPlatform {
-            platform: release.platform.clone(),
-        })?;
+    let deck = select_deck(catalog, release, deck_override)?;
+    let rom_path = resolve_rom_path(catalog, release, fallback_root);
+    let (mut args, replaced) = substitute_rom_placeholder(&deck.arguments, &rom_path);
 
-    // Prefer the Release's own Vault; fall back to the env override for manual
-    // Releases that belong to no Vault.
-    let vault_root = release
-        .vault_id
-        .as_deref()
-        .and_then(|id| catalog.vaults.iter().find(|v| v.id == id))
-        .map(|v| v.path.as_str())
-        .or(fallback_root);
+    match deck.kind {
+        DeckKind::DirectLaunch => Ok(LaunchSpec {
+            program: rom_path,
+            args,
+        }),
+        DeckKind::Emulator => {
+            if !replaced {
+                args.push(rom_path);
+            }
+            Ok(LaunchSpec {
+                program: deck.executable_path.clone(),
+                args,
+            })
+        }
+    }
+}
 
-    let rom_path = match vault_root {
-        Some(root) if !root.trim().is_empty() => Path::new(root.trim())
-            .join(&release.file_path)
-            .to_string_lossy()
-            .into_owned(),
-        _ => release.file_path.clone(),
-    };
-
-    let mut args = deck.arguments.clone();
-    args.push(rom_path);
-
-    Ok(LaunchSpec {
-        program: deck.executable_path.clone(),
-        args,
-    })
+/// Build a spec that exercises a Deck's executable *without* a real Release — the
+/// "Test launch" action on the Decks settings screen, used to confirm an emulator
+/// is installed and configured. The Deck's placeholder arguments are dropped
+/// (there is no ROM to substitute), leaving just its fixed flags.
+///
+/// A [`DeckKind::DirectLaunch`] Deck has no emulator of its own, so there is
+/// nothing to test — that is a [`LaunchError::NotTestable`].
+pub fn resolve_deck_test_spec(deck: &Deck) -> Result<LaunchSpec, LaunchError> {
+    match deck.kind {
+        DeckKind::DirectLaunch => Err(LaunchError::NotTestable {
+            deck_id: deck.id.clone(),
+        }),
+        DeckKind::Emulator => {
+            let args = deck
+                .arguments
+                .iter()
+                .filter(|arg| !ROM_PLACEHOLDERS.iter().any(|token| arg.contains(token)))
+                .cloned()
+                .collect();
+            Ok(LaunchSpec {
+                program: deck.executable_path.clone(),
+                args,
+            })
+        }
+    }
 }
 
 /// Build (but do not spawn) the OS command for a spec.
@@ -403,11 +530,34 @@ pub async fn launch_release(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     release_id: String,
+    deck_id: Option<String>,
 ) -> Result<LaunchResult, String> {
     let catalog = crate::catalog::load_bundled_catalog(&app)?;
     let vault_root = std::env::var(VAULT_DIR_ENV).ok();
-    let spec = resolve_release_spec(&catalog, &release_id, vault_root.as_deref())
-        .map_err(|e| e.to_string())?;
+    let spec = resolve_release_spec(
+        &catalog,
+        &release_id,
+        vault_root.as_deref(),
+        deck_id.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    let program = spec.program.clone();
+    launch_with(program, window, || spawn(&spec), watch_on_thread).map_err(|e| e.to_string())
+}
+
+/// Tauri command backing the "Test launch" button on the Decks settings screen.
+/// Spawns the Deck's executable (with its fixed, non-placeholder arguments) so
+/// the user can confirm an emulator is installed and configured before a real
+/// game depends on it. Like [`launch_release`], a successful spawn hides the
+/// window and the background exit-watcher restores it when the test process
+/// exits. The Deck comes straight from the (unsaved) settings form, so a Deck can
+/// be tested before it is persisted.
+#[tauri::command]
+pub async fn test_launch_deck(
+    window: tauri::WebviewWindow,
+    deck: Deck,
+) -> Result<LaunchResult, String> {
+    let spec = resolve_deck_test_spec(&deck).map_err(|e| e.to_string())?;
     let program = spec.program.clone();
     launch_with(program, window, || spawn(&spec), watch_on_thread).map_err(|e| e.to_string())
 }
@@ -522,7 +672,7 @@ mod tests {
 
     #[test]
     fn release_spec_uses_deck_program_args_then_file_path() {
-        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", None)
+        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", None, None)
             .expect("release resolves");
         assert_eq!(spec.program, "mupen64plus");
         assert_eq!(
@@ -536,8 +686,9 @@ mod tests {
 
     #[test]
     fn release_spec_joins_file_path_onto_vault_root() {
-        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("/vault"))
-            .expect("release resolves");
+        let spec =
+            resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("/vault"), None)
+                .expect("release resolves");
         let rom = spec.args.last().expect("rom path appended");
         assert!(
             rom.starts_with("/vault") && rom.contains("ntsc.z64"),
@@ -547,7 +698,7 @@ mod tests {
 
     #[test]
     fn release_spec_blank_vault_root_is_ignored() {
-        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("   "))
+        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("   "), None)
             .expect("release resolves");
         assert_eq!(spec.args.last().unwrap(), "star-fox-64/ntsc.z64");
     }
@@ -580,8 +731,9 @@ mod tests {
     #[test]
     fn release_spec_resolves_file_path_against_its_vault() {
         // The Release's own Vault path wins even over the env fallback root.
-        let spec = resolve_release_spec(&vault_catalog(), "star-fox-64-ntsc", Some("/ignored"))
-            .expect("release resolves");
+        let spec =
+            resolve_release_spec(&vault_catalog(), "star-fox-64-ntsc", Some("/ignored"), None)
+                .expect("release resolves");
         let rom = spec.args.last().expect("rom path appended");
         assert!(
             rom.starts_with("/mnt/roms/n64") && rom.contains("ntsc.z64"),
@@ -592,15 +744,20 @@ mod tests {
     #[test]
     fn release_spec_falls_back_to_env_root_for_manual_releases() {
         // sample_catalog's Release has no vault_id, so the env fallback applies.
-        let spec = resolve_release_spec(&sample_catalog(), "star-fox-64-ntsc", Some("/fallback"))
-            .expect("release resolves");
+        let spec = resolve_release_spec(
+            &sample_catalog(),
+            "star-fox-64-ntsc",
+            Some("/fallback"),
+            None,
+        )
+        .expect("release resolves");
         let rom = spec.args.last().expect("rom path appended");
         assert!(rom.starts_with("/fallback"), "rom path was: {rom}");
     }
 
     #[test]
     fn release_spec_unknown_release_is_an_error() {
-        let err = resolve_release_spec(&sample_catalog(), "does-not-exist", None)
+        let err = resolve_release_spec(&sample_catalog(), "does-not-exist", None, None)
             .expect_err("unknown release should fail");
         assert!(matches!(err, LaunchError::UnknownRelease { .. }));
         assert!(err.to_string().contains("does-not-exist"));
@@ -608,10 +765,187 @@ mod tests {
 
     #[test]
     fn release_spec_missing_deck_for_platform_is_an_error() {
-        let err = resolve_release_spec(&sample_catalog(), "mario-mix", None)
+        let err = resolve_release_spec(&sample_catalog(), "mario-mix", None, None)
             .expect_err("snes has no deck configured");
         assert!(matches!(err, LaunchError::NoDeckForPlatform { .. }));
         assert!(err.to_string().contains("snes"), "message: {err}");
+    }
+
+    // --- Phase 2: placeholders, direct launch, deck selection -------------------
+
+    /// A catalog whose n64 Deck uses a `{rom}` placeholder mid-command (like
+    /// RetroArch's `-L <core> "<rom>"`), plus a spare deck for override tests.
+    fn placeholder_catalog() -> Catalog {
+        crate::catalog::Catalog::from_json(
+            r#"{
+                "releases": [
+                    {"id": "sf64", "gameId": "g", "title": "Star Fox 64",
+                     "platform": "n64", "releaseType": "retail",
+                     "filePath": "star-fox-64/ntsc.z64"}
+                ],
+                "decks": [
+                    {"id": "n64-retroarch", "platform": "n64",
+                     "executablePath": "retroarch",
+                     "arguments": ["-L", "mupen64plus_next.so", "{rom}"]}
+                ]
+            }"#,
+        )
+        .expect("placeholder catalog json is valid")
+    }
+
+    #[test]
+    fn release_spec_substitutes_rom_placeholder_in_place() {
+        let spec = resolve_release_spec(&placeholder_catalog(), "sf64", Some("/vault"), None)
+            .expect("release resolves");
+        assert_eq!(spec.program, "retroarch");
+        // The placeholder is replaced in place; the ROM is NOT also appended.
+        assert_eq!(spec.args.len(), 3);
+        assert_eq!(spec.args[0], "-L");
+        assert_eq!(spec.args[1], "mupen64plus_next.so");
+        assert!(
+            spec.args[2].starts_with("/vault") && spec.args[2].contains("ntsc.z64"),
+            "rom arg was: {}",
+            spec.args[2]
+        );
+    }
+
+    #[test]
+    fn release_spec_accepts_the_file_placeholder_spelling() {
+        let catalog = crate::catalog::Catalog::from_json(
+            r#"{
+                "releases": [
+                    {"id": "r", "gameId": "g", "title": "T", "platform": "ps1",
+                     "releaseType": "retail", "filePath": "game.chd"}
+                ],
+                "decks": [
+                    {"id": "duck", "platform": "ps1", "executablePath": "duckstation",
+                     "arguments": ["--", "{file}"]}
+                ]
+            }"#,
+        )
+        .expect("valid catalog");
+        let spec = resolve_release_spec(&catalog, "r", None, None).expect("resolves");
+        assert_eq!(spec.args, vec!["--".to_string(), "game.chd".to_string()]);
+    }
+
+    #[test]
+    fn release_spec_direct_launch_runs_the_rom_as_the_program() {
+        let catalog = crate::catalog::Catalog::from_json(
+            r#"{
+                "releases": [
+                    {"id": "witness", "gameId": "g", "title": "The Witness",
+                     "platform": "pc", "releaseType": "retail",
+                     "filePath": "The Witness/witness.exe"}
+                ],
+                "decks": [
+                    {"id": "pc-direct", "platform": "pc", "kind": "directLaunch",
+                     "arguments": ["--fullscreen"], "default": true}
+                ]
+            }"#,
+        )
+        .expect("valid catalog");
+        let spec = resolve_release_spec(&catalog, "witness", Some("/games"), None)
+            .expect("release resolves");
+        // The ROM itself is the program; args are the deck's own, ROM not appended.
+        assert!(
+            spec.program.starts_with("/games") && spec.program.ends_with("witness.exe"),
+            "program was: {}",
+            spec.program
+        );
+        assert_eq!(spec.args, vec!["--fullscreen".to_string()]);
+    }
+
+    /// A catalog with two n64 decks — a default and an alternative — plus a
+    /// release that overrides to the alternative by id.
+    fn multi_deck_catalog() -> Catalog {
+        crate::catalog::Catalog::from_json(
+            r#"{
+                "releases": [
+                    {"id": "plain", "gameId": "g", "title": "Plain",
+                     "platform": "n64", "releaseType": "retail", "filePath": "plain.z64"},
+                    {"id": "pinned", "gameId": "g", "title": "Pinned",
+                     "platform": "n64", "releaseType": "hack", "filePath": "pinned.z64",
+                     "deckId": "n64-alt"}
+                ],
+                "decks": [
+                    {"id": "n64-alt", "platform": "n64", "executablePath": "parallel-launcher"},
+                    {"id": "n64-default", "platform": "n64",
+                     "executablePath": "mupen64plus", "default": true}
+                ]
+            }"#,
+        )
+        .expect("multi-deck catalog json is valid")
+    }
+
+    #[test]
+    fn release_spec_prefers_the_platform_default_deck() {
+        // `n64-default` is listed second but is marked default, so it wins over
+        // the first-listed `n64-alt`.
+        let spec =
+            resolve_release_spec(&multi_deck_catalog(), "plain", None, None).expect("resolves");
+        assert_eq!(spec.program, "mupen64plus");
+    }
+
+    #[test]
+    fn release_spec_honours_a_stored_release_deck_override() {
+        let spec =
+            resolve_release_spec(&multi_deck_catalog(), "pinned", None, None).expect("resolves");
+        assert_eq!(spec.program, "parallel-launcher");
+    }
+
+    #[test]
+    fn release_spec_explicit_override_beats_default_and_stored() {
+        // The launch-time override wins even over the release's own deckId.
+        let spec = resolve_release_spec(&multi_deck_catalog(), "pinned", None, Some("n64-default"))
+            .expect("resolves");
+        assert_eq!(spec.program, "mupen64plus");
+    }
+
+    #[test]
+    fn release_spec_falls_back_to_first_deck_when_none_is_default() {
+        // No deck is marked default, so the first-listed platform deck is used.
+        let spec =
+            resolve_release_spec(&placeholder_catalog(), "sf64", None, None).expect("resolves");
+        assert_eq!(spec.program, "retroarch");
+    }
+
+    #[test]
+    fn release_spec_unknown_deck_override_is_an_error() {
+        let err = resolve_release_spec(&multi_deck_catalog(), "plain", None, Some("nope"))
+            .expect_err("unknown deck override should fail");
+        assert!(matches!(err, LaunchError::UnknownDeck { .. }));
+        assert!(err.to_string().contains("nope"), "message: {err}");
+    }
+
+    #[test]
+    fn deck_test_spec_runs_executable_without_placeholder_args() {
+        let deck = Deck {
+            id: "n64".to_string(),
+            platform: "n64".to_string(),
+            executable_path: "retroarch".to_string(),
+            arguments: vec!["-L".to_string(), "core.so".to_string(), "{rom}".to_string()],
+            kind: DeckKind::Emulator,
+            is_default: true,
+        };
+        let spec = resolve_deck_test_spec(&deck).expect("emulator deck is testable");
+        assert_eq!(spec.program, "retroarch");
+        // The `{rom}` placeholder arg is dropped — there is no ROM to test with.
+        assert_eq!(spec.args, vec!["-L".to_string(), "core.so".to_string()]);
+    }
+
+    #[test]
+    fn deck_test_spec_rejects_a_direct_launch_deck() {
+        let deck = Deck {
+            id: "pc".to_string(),
+            platform: "pc".to_string(),
+            executable_path: String::new(),
+            arguments: vec![],
+            kind: DeckKind::DirectLaunch,
+            is_default: true,
+        };
+        let err = resolve_deck_test_spec(&deck).expect_err("direct launch has nothing to test");
+        assert!(matches!(err, LaunchError::NotTestable { .. }));
+        assert!(err.to_string().contains("pc"), "message: {err}");
     }
 
     #[test]

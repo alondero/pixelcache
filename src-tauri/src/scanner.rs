@@ -39,7 +39,7 @@
 //!    reconciles against the existing catalog, writes `catalog.json`, and
 //!    stringifies the typed [`ScanError`] only at the IPC boundary.
 
-use crate::catalog::{Catalog, Game, Release, ReleaseType, Vault};
+use crate::catalog::{Catalog, Deck, DeckKind, Game, Release, ReleaseType, Vault};
 use std::fmt;
 use std::path::Path;
 
@@ -194,7 +194,11 @@ pub struct RomFile {
 ///   scan are kept — the player added or scanned those elsewhere.
 /// * Releases from the scanned Vaults are dropped and rebuilt from `files`, so a
 ///   ROM deleted on disk disappears from the catalog on the next scan.
-/// * **Decks**, **Playlists**, and the **Vault** config carry over unchanged.
+/// * **Playlists** and the **Vault** config carry over unchanged.
+/// * Existing **Decks** carry over; additionally, a placeholder Deck is *seeded*
+///   for any discovered platform that has none, so a freshly scanned library is
+///   launchable (or one edit away from it) instead of erroring with "no deck
+///   configured" — see [`seed_decks`].
 /// * A [`Game`]'s curated `developer` / `relations` survive; only its
 ///   `primary_release_id` is recomputed from the reconciled Release set.
 ///
@@ -238,15 +242,18 @@ pub fn apply_scan(existing: &Catalog, files: &[RomFile], scanned_vault_ids: &[St
             release_type: file.parsed.release_type,
             publisher: None,
             vault_id: Some(file.vault_id.clone()),
+            deck_id: None,
             file_path: file.relative_path.clone(),
             media: None,
         });
     }
 
+    let decks = seed_decks(&existing.decks, &releases);
+
     Catalog {
         games: group_games(&releases, &existing.games),
         releases,
-        decks: existing.decks.clone(),
+        decks,
         playlists: existing.playlists.clone(),
         vaults: existing.vaults.clone(),
     }
@@ -283,6 +290,69 @@ fn group_games(releases: &[Release], existing_games: &[Game]) -> Vec<Game> {
         }
     }
     games
+}
+
+/// A best-guess standalone emulator command for a platform, used as the
+/// executable of a *seeded placeholder Deck* so a freshly scanned library has
+/// something to launch. Mirrors [`default_extensions_for_platform`]: the platform
+/// is known from the Vault, so a sensible default command can be suggested. The
+/// user confirms or edits it on the Decks settings screen; an unknown platform
+/// yields `None`, leaving the seeded Deck's executable blank for the user to fill
+/// in.
+pub fn default_emulator_for_platform(platform: &str) -> Option<&'static str> {
+    let command = match platform {
+        "snes" => "snes9x",
+        "nes" => "fceux",
+        "n64" => "mupen64plus",
+        "gb" | "gbc" | "gba" => "mgba",
+        "genesis" | "sms" | "gamegear" | "segacd" => "blastem",
+        "pcengine" | "pcenginecd" => "mednafen",
+        "atari2600" => "stella",
+        "wonderswan" | "neogeopocket" => "mednafen",
+        "ps1" => "duckstation",
+        "ps2" => "pcsx2",
+        "psp" => "ppsspp",
+        "gamecube" | "wii" => "dolphin-emu",
+        "dreamcast" | "saturn" => "flycast",
+        "3do" => "retroarch",
+        _ => return None,
+    };
+    Some(command)
+}
+
+/// Seed a placeholder [`Deck`] for every platform present in `releases` that has
+/// no Deck yet, preserving all existing Decks.
+///
+/// Before Phase 2 a scanned library launched *nothing*: the launch engine errored
+/// with "no deck configured for platform" until the user hand-edited a Deck into
+/// `catalog.json`. Seeding gives each discovered platform a starting Deck — its
+/// default flag set, a best-guess emulator command (see
+/// [`default_emulator_for_platform`], blank when the platform is unknown) — that
+/// the Decks settings screen can then confirm or correct. Existing Decks always
+/// win: a platform the user has already configured is never given a second Deck.
+fn seed_decks(existing_decks: &[Deck], releases: &[Release]) -> Vec<Deck> {
+    let mut decks = existing_decks.to_vec();
+
+    // Platforms already covered by a Deck, so we never double-seed.
+    let mut covered: Vec<String> = decks.iter().map(|d| d.platform.clone()).collect();
+
+    for release in releases {
+        if covered.iter().any(|p| p == &release.platform) {
+            continue;
+        }
+        covered.push(release.platform.clone());
+        decks.push(Deck {
+            id: format!("{}-default", release.platform),
+            platform: release.platform.clone(),
+            executable_path: default_emulator_for_platform(&release.platform)
+                .unwrap_or("")
+                .to_string(),
+            arguments: Vec::new(),
+            kind: DeckKind::Emulator,
+            is_default: true,
+        });
+    }
+    decks
 }
 
 /// Errors that can occur while scanning Vaults.
@@ -984,10 +1054,97 @@ mod tests {
     }
 
     #[test]
-    fn build_catalog_produces_no_decks() {
-        let files = vec![rom("t/Tetris.nes", "nes", parse_filename("Tetris"))];
+    fn build_catalog_seeds_a_default_deck_per_platform() {
+        let files = vec![
+            rom("t/Tetris.nes", "nes", parse_filename("Tetris")),
+            rom(
+                "s/Super Metroid.sfc",
+                "snes",
+                parse_filename("Super Metroid"),
+            ),
+        ];
         let catalog = build_catalog(&files);
-        assert!(catalog.decks.is_empty());
+        // One placeholder deck per discovered platform, each marked default.
+        assert_eq!(catalog.decks.len(), 2);
+        assert!(catalog.decks.iter().all(|d| d.is_default));
+        let nes = catalog
+            .decks
+            .iter()
+            .find(|d| d.platform == "nes")
+            .expect("nes deck seeded");
+        assert_eq!(nes.id, "nes-default");
+        assert_eq!(nes.executable_path, "fceux");
+        assert_eq!(nes.kind, crate::catalog::DeckKind::Emulator);
+    }
+
+    #[test]
+    fn unknown_platform_seeds_a_deck_with_a_blank_executable() {
+        let files = vec![rom("x/Game.rom", "dridgeland", parse_filename("Game"))];
+        let catalog = build_catalog(&files);
+        let deck = &catalog.decks[0];
+        assert_eq!(deck.platform, "dridgeland");
+        assert_eq!(deck.executable_path, "");
+        assert!(deck.is_default);
+    }
+
+    #[test]
+    fn seed_decks_never_overrides_an_existing_platform_deck() {
+        // The user has already configured a custom snes deck; a rescan must not
+        // add a second one for snes, but should still seed the new nes platform.
+        let existing = Catalog::from_json(
+            r#"{
+                "decks": [{"id": "my-snes", "platform": "snes",
+                           "executablePath": "/opt/bsnes"}]
+            }"#,
+        )
+        .expect("valid catalog");
+        let files = vec![
+            rom_in(
+                "Super Mario World (USA).sfc",
+                "snes",
+                "snes-vault",
+                parse_filename("Super Mario World (USA)"),
+            ),
+            rom_in(
+                "Metroid (USA).nes",
+                "nes",
+                "nes-vault",
+                parse_filename("Metroid (USA)"),
+            ),
+        ];
+        let catalog = apply_scan(
+            &existing,
+            &files,
+            &["snes-vault".to_string(), "nes-vault".to_string()],
+        );
+
+        let snes_decks: Vec<_> = catalog
+            .decks
+            .iter()
+            .filter(|d| d.platform == "snes")
+            .collect();
+        assert_eq!(
+            snes_decks.len(),
+            1,
+            "existing snes deck preserved, not doubled"
+        );
+        assert_eq!(snes_decks[0].id, "my-snes");
+        // The newly discovered nes platform got its placeholder deck.
+        assert!(catalog
+            .decks
+            .iter()
+            .any(|d| d.platform == "nes" && d.id == "nes-default"));
+    }
+
+    #[test]
+    fn default_emulator_covers_cartridge_and_disc_platforms() {
+        assert_eq!(default_emulator_for_platform("n64"), Some("mupen64plus"));
+        assert_eq!(default_emulator_for_platform("ps2"), Some("pcsx2"));
+        assert_eq!(
+            default_emulator_for_platform("gamecube"),
+            Some("dolphin-emu")
+        );
+        assert_eq!(default_emulator_for_platform("dridgeland"), None);
     }
 
     #[test]
