@@ -117,6 +117,88 @@
   outline-offset: 2px;
 }
 
+/* ---- Games toolbar: search + filters + sort ---- */
+
+.games-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  margin: 0.25rem 0 0.25rem;
+}
+
+.search-input {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.9rem;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.search-input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.search-input:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.search-input:focus-visible,
+.filter-select:focus-visible {
+  outline: 2px solid #a9b4ff;
+  outline-offset: 2px;
+  border-color: rgba(169, 180, 255, 0.5);
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.filter-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.filter-select {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.filter-select:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Dropdown list items render on the native menu, which is light by default. */
+.filter-select option {
+  color: #111;
+}
+
+.results-count {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+
 .game-grid {
   display: grid;
   grid-template-columns: repeat(

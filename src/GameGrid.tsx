@@ -1,10 +1,10 @@
 import type { RefObject } from "react";
-import type { Catalog } from "./catalog";
-import { gameCardInfos } from "./catalogView";
+import type { GameCardInfo } from "./catalogView";
 import { GRID_CSS_VARS } from "./gridLayout";
 
 interface GameGridProps {
-  catalog: Catalog;
+  /** The cards to render, already derived and filtered/sorted by the caller. */
+  cards: GameCardInfo[];
   containerRef: RefObject<HTMLElement | null>;
   focusedIndex: number;
   registerItemRef: (index: number) => (el: HTMLElement | null) => void;
@@ -16,15 +16,13 @@ interface GameGridProps {
 
 /** Responsive CSS grid of Game cards, focus-navigable via `useGridFocus`. */
 function GameGrid({
-  catalog,
+  cards,
   containerRef,
   focusedIndex,
   registerItemRef,
   focusItem,
   onSelectGame,
 }: GameGridProps) {
-  const cards = gameCardInfos(catalog);
-
   return (
     <div
       className="game-grid"

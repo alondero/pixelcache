@@ -1,10 +1,23 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Catalog, Release } from "./catalog";
 import type { LaunchResult } from "./launch";
-import { peerReleases, primaryReleaseTitle } from "./catalogView";
+import {
+  gameCardInfos,
+  peerReleases,
+  primaryReleaseTitle,
+} from "./catalogView";
+import {
+  availablePlatforms,
+  availableReleaseTypes,
+  DEFAULT_FILTER,
+  filterGames,
+  isFilterActive,
+  type FilterState,
+} from "./gamesFilter";
 import GameDetailsPanel from "./GameDetailsPanel";
 import GameGrid from "./GameGrid";
+import GamesFilterBar from "./GamesFilterBar";
 import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
 import { useGridFocus } from "./useGridFocus";
 
@@ -42,14 +55,28 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
   });
   const [scanStatus, setScanStatus] = useState<ScanStatus>({ kind: "idle" });
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<FilterState>(DEFAULT_FILTER);
 
   const games = catalog.games;
   const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
-  // The roving focus loop covers every Game card plus the two action buttons,
-  // so arrow keys/D-pad can always reach them regardless of catalog size. It is
-  // suspended while the details panel is open — the panel runs its own focus
-  // loop, and only one may listen to the gamepad at a time.
-  const launchButtonIndex = games.length;
+
+  // Derive one card per Game, then apply the active search/filter/sort. Memoised
+  // so typing in the search box doesn't re-scan the catalog on unrelated
+  // re-renders. The filtered set drives both the grid and the focus item count.
+  const allCards = useMemo(() => gameCardInfos(catalog), [catalog]);
+  const cards = useMemo(
+    () => filterGames(catalog, allCards, filter),
+    [catalog, allCards, filter],
+  );
+  const platforms = useMemo(() => availablePlatforms(catalog), [catalog]);
+  const releaseTypes = useMemo(() => availableReleaseTypes(catalog), [catalog]);
+
+  // The roving focus loop covers every *visible* Game card plus the two action
+  // buttons, so arrow keys/D-pad can always reach them regardless of how many
+  // cards the filter leaves. It is suspended while the details panel is open —
+  // the panel runs its own focus loop, and only one may listen to the gamepad
+  // at a time.
+  const launchButtonIndex = cards.length;
   const rescanButtonIndex = launchButtonIndex + 1;
   const { containerRef, focusedIndex, registerItemRef, focusItem } =
     useGridFocus({
@@ -104,14 +131,33 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
 
   return (
     <>
+      <GamesFilterBar
+        filter={filter}
+        onChange={setFilter}
+        platforms={platforms}
+        releaseTypes={releaseTypes}
+        resultCount={cards.length}
+        totalCount={allCards.length}
+      />
+
       <GameGrid
-        catalog={catalog}
+        cards={cards}
         containerRef={containerRef}
         focusedIndex={focusedIndex}
         registerItemRef={registerItemRef}
         focusItem={focusItem}
         onSelectGame={setSelectedGameId}
       />
+
+      {cards.length === 0 && (
+        <p className="status" role="status">
+          {allCards.length === 0
+            ? "No games yet. Rescan a Vault to populate your library."
+            : isFilterActive(filter)
+              ? "No games match your search."
+              : "No games to show."}
+        </p>
+      )}
 
       <div className="actions">
         <button
