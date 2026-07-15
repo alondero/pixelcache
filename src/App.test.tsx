@@ -325,14 +325,98 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const firstCard = await screen.findByText("Star Fox 64");
+    // Cards default to title A–Z, so Metroid is the first card and starts focused.
+    const firstCard = await screen.findByText("Metroid");
     expect(firstCard.closest("button")).toHaveClass("is-focused");
 
     await user.keyboard("{ArrowRight}");
     expect(firstCard.closest("button")).not.toHaveClass("is-focused");
-    expect(screen.getByText("Metroid").closest("button")).toHaveClass(
+    expect(screen.getByText("Star Fox 64").closest("button")).toHaveClass(
       "is-focused",
     );
+  });
+
+  it("filters the grid live as the user types in the search box", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    expect(screen.getByText("Metroid")).toBeInTheDocument();
+
+    await user.type(
+      screen.getByRole("searchbox", { name: /search games/i }),
+      "metroid",
+    );
+
+    expect(screen.getByText("Metroid")).toBeInTheDocument();
+    expect(screen.queryByText("Star Fox 64")).not.toBeInTheDocument();
+  });
+
+  it("matches a game through a differently-titled peer release", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.type(
+      screen.getByRole("searchbox", { name: /search games/i }),
+      "lylat",
+    );
+
+    // "Lylat Wars" is Star Fox 64's PAL release, so the Star Fox 64 card stays.
+    expect(screen.getByText("Star Fox 64")).toBeInTheDocument();
+    expect(screen.queryByText("Metroid")).not.toBeInTheDocument();
+  });
+
+  it("shows a no-match message when the search excludes every game", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.type(
+      screen.getByRole("searchbox", { name: /search games/i }),
+      "zzz-nothing",
+    );
+
+    expect(screen.getByText(/no games match your search/i)).toBeInTheDocument();
+  });
+
+  it("filters the grid by platform", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    // Star Fox 64 is n64; Metroid is nes.
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: /platform/i }),
+      "nes",
+    );
+
+    expect(screen.getByText("Metroid")).toBeInTheDocument();
+    expect(screen.queryByText("Star Fox 64")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Launch button reachable by arrow keys after filtering shrinks the grid", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.type(
+      screen.getByRole("searchbox", { name: /search games/i }),
+      "metroid",
+    );
+
+    // Only one card remains; ArrowRight from it lands on the Launch button.
+    const card = screen.getByText("Metroid").closest("button")!;
+    card.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(
+      screen.getByRole("button", { name: /launch test game/i }),
+    ).toHaveFocus();
   });
 
   it("renders a Playlists tab and switches to it when selected", async () => {
