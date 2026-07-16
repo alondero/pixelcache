@@ -192,6 +192,37 @@
   color: #111;
 }
 
+/* Favorites-only pill toggle, matching the select controls' glassy look. */
+.favorites-toggle {
+  padding: 0.5rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.favorites-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.favorites-toggle:focus-visible {
+  outline: 2px solid #a9b4ff;
+  outline-offset: 2px;
+}
+
+.favorites-toggle.is-active {
+  color: #ff7d9c;
+  border-color: rgba(255, 125, 156, 0.45);
+  background: rgba(255, 125, 156, 0.12);
+}
+
 .results-count {
   margin-left: auto;
   font-size: 0.8rem;
@@ -211,6 +242,7 @@
 }
 
 .game-card {
+  position: relative; /* anchors the favorite heart badge */
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -282,6 +314,116 @@
 .game-card-meta {
   font-size: 0.8rem;
   color: rgba(255, 255, 255, 0.55);
+}
+
+/* Heart badge floating over the card cover's top-right corner. */
+.game-card-favorite {
+  position: absolute;
+  top: 1.35rem;
+  right: 1.45rem;
+  z-index: 1;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0.3rem;
+  border-radius: 999px;
+  color: #ff7d9c;
+  background: rgba(10, 10, 18, 0.55);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 125, 156, 0.35);
+}
+
+/* ---- Continue Playing hero: one press back into the last game ---- */
+
+.continue-hero {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  width: 100%;
+  margin: 0.5rem 0 0;
+  padding: 1rem 1.3rem;
+  text-align: left;
+  color: #fff;
+  cursor: pointer;
+  border-radius: 16px;
+  border: 1px solid rgba(169, 180, 255, 0.22);
+  background: linear-gradient(
+    120deg,
+    rgba(88, 101, 242, 0.22),
+    rgba(255, 255, 255, 0.05) 55%,
+    rgba(88, 101, 242, 0.1)
+  );
+  transition:
+    transform 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.continue-hero:hover {
+  background: linear-gradient(
+    120deg,
+    rgba(88, 101, 242, 0.3),
+    rgba(255, 255, 255, 0.08) 55%,
+    rgba(88, 101, 242, 0.14)
+  );
+}
+
+.continue-hero:focus-visible,
+.continue-hero.is-focused {
+  outline: 2px solid #a9b4ff;
+  outline-offset: 3px;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 28px rgba(88, 101, 242, 0.4);
+}
+
+.continue-hero-cover {
+  flex-shrink: 0;
+  width: 4.6rem;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.continue-hero-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.continue-hero-kicker {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #a9b4ff;
+}
+
+.continue-hero-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.continue-hero-meta {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.continue-hero-play {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  font-size: 1rem;
+  color: #fff;
+  border-radius: 999px;
+  background: rgba(88, 101, 242, 0.45);
+  border: 1px solid rgba(169, 180, 255, 0.4);
 }
 
 .title {
@@ -431,6 +573,50 @@
   color: rgba(255, 255, 255, 0.55);
 }
 
+.details-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+/* Heart toggle in the details header; shares the close button's glassy square. */
+.details-favorite {
+  flex-shrink: 0;
+  width: 2.2rem;
+  height: 2.2rem;
+  font-size: 1rem;
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.details-favorite:hover,
+.details-favorite:focus-visible,
+.details-favorite.is-focused {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  outline: 2px solid #a9b4ff;
+  outline-offset: 2px;
+}
+
+.details-favorite.is-favorite {
+  color: #ff7d9c;
+  border-color: rgba(255, 125, 156, 0.45);
+  background: rgba(255, 125, 156, 0.12);
+}
+
+/* A favorited heart pops when toggled — feedback that the press landed. */
+.details-favorite.is-favorite:active {
+  transform: scale(1.15);
+}
+
 .details-close {
   flex-shrink: 0;
   width: 2.2rem;
@@ -538,6 +724,11 @@
 .release-row-meta {
   font-size: 0.75rem;
   color: rgba(255, 255, 255, 0.55);
+}
+
+.release-row-activity {
+  font-size: 0.72rem;
+  color: #a9b4ff;
 }
 
 /* ---- Decks settings screen (Phase 2: launch configuration) ---- */

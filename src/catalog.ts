@@ -59,6 +59,12 @@ export interface Game {
    * inherits that slot from here (see `resolveMedia` in `src/media.ts`).
    */
   media?: Media;
+  /**
+   * Whether the player marked this Game a favorite. Curation, so it lives in
+   * the syncable Catalog — unlike play activity, which is device-local (see
+   * `src/playHistory.ts`). Absent means `false`.
+   */
+  favorite?: boolean;
 }
 
 /**

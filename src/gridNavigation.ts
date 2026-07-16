@@ -30,21 +30,40 @@ export function computeColumns(
  * grid of `itemCount` items laid out in `columns`-wide rows (the last row may
  * be partial). All movement wraps around the grid; `down`/`up` clamp into the
  * ragged last row rather than landing past the end.
+ *
+ * The first `leading` items are **full-width rows** stacked above the grid
+ * (e.g. the "Continue Playing" hero banner): each occupies a row of its own,
+ * and the remaining `itemCount - leading` items flow in `columns`-wide rows
+ * below. With `leading = 0` (the default) this is a plain uniform grid.
  */
 export function moveFocusIndex(
   current: number,
   direction: Direction,
   itemCount: number,
   columns: number,
+  leading = 0,
 ): number {
   if (itemCount <= 1) return itemCount === 1 ? 0 : current;
 
-  const row = Math.floor(current / columns);
-  const col = current % columns;
-  const rowCount = Math.ceil(itemCount / columns);
-  const lastRowLength = itemCount - (rowCount - 1) * columns;
-  const rowLength = (r: number) =>
-    r === rowCount - 1 ? lastRowLength : columns;
+  // Describe the layout as stacked rows: `leading` single-item rows, then the
+  // grid rows. Up/down move a whole row (keeping the column, clamped to the
+  // target row's length); left/right stay a simple linear walk with wrap, so
+  // a hero row never traps horizontal navigation.
+  const gridItems = itemCount - leading;
+  const gridRowCount = Math.ceil(Math.max(gridItems, 0) / columns);
+  const rowCount = leading + gridRowCount;
+  const lastRowLength = gridItems - (gridRowCount - 1) * columns;
+
+  const rowOf = (index: number) =>
+    index < leading ? index : leading + Math.floor((index - leading) / columns);
+  const colOf = (index: number) =>
+    index < leading ? 0 : (index - leading) % columns;
+  const rowLength = (r: number) => {
+    if (r < leading) return 1;
+    return r === rowCount - 1 ? lastRowLength : columns;
+  };
+  const indexAt = (r: number, c: number) =>
+    r < leading ? r : leading + (r - leading) * columns + c;
 
   switch (direction) {
     case "right":
@@ -52,14 +71,14 @@ export function moveFocusIndex(
     case "left":
       return current === 0 ? itemCount - 1 : current - 1;
     case "down": {
-      const nextRow = (row + 1) % rowCount;
-      const clampedCol = Math.min(col, rowLength(nextRow) - 1);
-      return nextRow * columns + clampedCol;
+      const nextRow = (rowOf(current) + 1) % rowCount;
+      const clampedCol = Math.min(colOf(current), rowLength(nextRow) - 1);
+      return indexAt(nextRow, clampedCol);
     }
     case "up": {
-      const prevRow = (row - 1 + rowCount) % rowCount;
-      const clampedCol = Math.min(col, rowLength(prevRow) - 1);
-      return prevRow * columns + clampedCol;
+      const prevRow = (rowOf(current) - 1 + rowCount) % rowCount;
+      const clampedCol = Math.min(colOf(current), rowLength(prevRow) - 1);
+      return indexAt(prevRow, clampedCol);
     }
   }
 }

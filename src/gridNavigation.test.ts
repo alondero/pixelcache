@@ -80,3 +80,53 @@ describe("moveFocusIndex", () => {
     expect(moveFocusIndex(0, "down", 1, 3)).toBe(0);
   });
 });
+
+describe("moveFocusIndex with a leading full-width row", () => {
+  // A hero banner above a 3-column grid of 6 cards (7 items total):
+  // [0        ]   <- hero, full width
+  // [1] [2] [3]
+  // [4] [5] [6]
+  const itemCount = 7;
+  const columns = 3;
+  const leading = 1;
+
+  it("moves down from the hero into the first grid row's first column", () => {
+    expect(moveFocusIndex(0, "down", itemCount, columns, leading)).toBe(1);
+  });
+
+  it("moves up from anywhere in the first grid row back to the hero", () => {
+    expect(moveFocusIndex(1, "up", itemCount, columns, leading)).toBe(0);
+    expect(moveFocusIndex(3, "up", itemCount, columns, leading)).toBe(0);
+  });
+
+  it("keeps the column when moving between grid rows below the hero", () => {
+    expect(moveFocusIndex(2, "down", itemCount, columns, leading)).toBe(5);
+    expect(moveFocusIndex(6, "up", itemCount, columns, leading)).toBe(3);
+  });
+
+  it("wraps up from the hero into the last grid row", () => {
+    expect(moveFocusIndex(0, "up", itemCount, columns, leading)).toBe(4);
+  });
+
+  it("wraps down from the last grid row back to the hero", () => {
+    expect(moveFocusIndex(5, "down", itemCount, columns, leading)).toBe(0);
+  });
+
+  it("clamps into a ragged last row when descending past it", () => {
+    // [0] hero / [1][2][3] / [4] — moving down from col 2 clamps to item 4.
+    expect(moveFocusIndex(3, "down", 5, columns, leading)).toBe(4);
+  });
+
+  it("walks linearly with left/right straight through the hero", () => {
+    expect(moveFocusIndex(0, "right", itemCount, columns, leading)).toBe(1);
+    expect(moveFocusIndex(1, "left", itemCount, columns, leading)).toBe(0);
+    expect(moveFocusIndex(0, "left", itemCount, columns, leading)).toBe(6);
+  });
+
+  it("matches the plain grid behaviour when leading is zero", () => {
+    expect(moveFocusIndex(1, "down", itemCount, columns, 0)).toBe(4);
+    expect(moveFocusIndex(1, "down", itemCount, columns)).toBe(
+      moveFocusIndex(1, "down", itemCount, columns, 0),
+    );
+  });
+});

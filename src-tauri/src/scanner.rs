@@ -274,19 +274,29 @@ fn group_games(releases: &[Release], existing_games: &[Game]) -> Vec<Game> {
                 game.primary_release_id = release.id.clone();
             }
         } else {
-            // Seed developer / relations / media from the curated Game if we
-            // already had one under this id; a fresh Game starts with none.
-            let (developer, relations, media) = existing_games
+            // Seed developer / relations / media / favorite from the curated
+            // Game if we already had one under this id; a fresh Game starts
+            // with none. Curated fields must survive a rescan — dropping any
+            // of them here would silently wipe user edits.
+            let (developer, relations, media, favorite) = existing_games
                 .iter()
                 .find(|g| g.id == release.game_id)
-                .map(|g| (g.developer.clone(), g.relations.clone(), g.media.clone()))
-                .unwrap_or((None, Vec::new(), None));
+                .map(|g| {
+                    (
+                        g.developer.clone(),
+                        g.relations.clone(),
+                        g.media.clone(),
+                        g.favorite,
+                    )
+                })
+                .unwrap_or((None, Vec::new(), None, false));
             games.push(Game {
                 id: release.game_id.clone(),
                 developer,
                 primary_release_id: release.id.clone(),
                 relations,
                 media,
+                favorite,
             });
         }
     }

@@ -131,6 +131,12 @@ pub struct Game {
     /// logo can be set once on the Game instead of on every regional Release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<Media>,
+    /// Whether the player marked this Game a favorite. Curation (not activity),
+    /// so it belongs in the syncable Catalog — unlike play history, which is
+    /// device-local (`crate::playhistory`). Serialized only when `true` so
+    /// pre-favorites catalogs round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub favorite: bool,
 }
 
 /// How a [`Deck`] turns a [`Release`] into a launchable process.
@@ -375,6 +381,32 @@ pub async fn save_decks(app: tauri::AppHandle, decks: Vec<Deck>) -> Result<Catal
     catalog.decks = decks;
     persist_catalog(&app, &catalog)?;
     Ok(catalog)
+}
+
+/// Set (or clear) the favorite flag on one [`Game`]. An unknown id is a no-op
+/// rather than an error, matching [`apply_media`]'s tolerance so the frontend
+/// never has to keep ids perfectly in sync. Pure over its inputs so the update
+/// rule is unit-testable without touching disk.
+pub fn apply_favorite(mut catalog: Catalog, game_id: &str, favorite: bool) -> Catalog {
+    if let Some(game) = catalog.games.iter_mut().find(|g| g.id == game_id) {
+        game.favorite = favorite;
+    }
+    catalog
+}
+
+/// Tauri command backing the favorite toggles on the Games screen: flip one
+/// Game's favorite flag, persist the catalog, and return it so the whole app
+/// refreshes.
+#[tauri::command]
+pub async fn set_favorite(
+    app: tauri::AppHandle,
+    game_id: String,
+    favorite: bool,
+) -> Result<Catalog, String> {
+    let catalog = load_bundled_catalog(&app)?;
+    let updated = apply_favorite(catalog, &game_id, favorite);
+    persist_catalog(&app, &updated)?;
+    Ok(updated)
 }
 
 /// Apply a manual media assignment (from the Media settings screen) to the
@@ -797,6 +829,34 @@ mod tests {
         );
         assert_eq!(updated.releases[0].media, None);
         assert!(updated.games.is_empty());
+    }
+
+    #[test]
+    fn game_favorite_defaults_false_and_round_trips() {
+        // Absent flag parses as false (backward compatible with existing catalogs)…
+        let catalog = Catalog::from_json(sample_json()).expect("valid catalog json");
+        assert!(!catalog.games[0].favorite);
+        // …a false flag is omitted on write, so pre-favorites catalogs don't churn…
+        let json = serde_json::to_string(&catalog).expect("serializes");
+        assert!(!json.contains("favorite"));
+        // …and a true flag survives the round trip.
+        let favorited = apply_favorite(catalog, "star-fox-64", true);
+        let json = serde_json::to_string(&favorited).expect("serializes");
+        assert!(json.contains("\"favorite\":true"));
+        let reparsed = Catalog::from_json(&json).expect("parses");
+        assert!(reparsed.games[0].favorite);
+    }
+
+    #[test]
+    fn apply_favorite_sets_clears_and_ignores_unknown_ids() {
+        let catalog = Catalog::from_json(sample_json()).expect("valid catalog json");
+        let updated = apply_favorite(catalog, "star-fox-64", true);
+        assert!(updated.games[0].favorite);
+        let cleared = apply_favorite(updated, "star-fox-64", false);
+        assert!(!cleared.games[0].favorite);
+        // An unknown id must be a tolerated no-op, not a panic or an error.
+        let untouched = apply_favorite(cleared.clone(), "ghost", true);
+        assert_eq!(untouched, cleared);
     }
 
     #[test]

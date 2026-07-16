@@ -1,12 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Catalog, Release } from "./catalog";
+import { listen } from "@tauri-apps/api/event";
+import type { Catalog, Game, Release } from "./catalog";
 import type { LaunchResult } from "./launch";
 import {
   gameCardInfos,
   peerReleases,
   primaryReleaseTitle,
 } from "./catalogView";
+import ContinuePlayingHero from "./ContinuePlayingHero";
 import {
   availablePlatforms,
   availableReleaseTypes,
@@ -19,6 +21,14 @@ import GameDetailsPanel from "./GameDetailsPanel";
 import GameGrid from "./GameGrid";
 import GamesFilterBar from "./GamesFilterBar";
 import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
+import { previewSource, resolveMedia } from "./media";
+import {
+  mostRecentlyPlayed,
+  playEntriesByGame,
+  SESSION_RECORDED_EVENT,
+  type PlayHistory,
+  type SessionRecorded,
+} from "./playHistory";
 import { useGridFocus } from "./useGridFocus";
 
 type LaunchStatus =
@@ -56,27 +66,79 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
   const [scanStatus, setScanStatus] = useState<ScanStatus>({ kind: "idle" });
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterState>(DEFAULT_FILTER);
+  const [history, setHistory] = useState<PlayHistory>({});
 
   const games = catalog.games;
   const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
+
+  // Hydrate play activity once, then keep it live: the backend emits a
+  // session-recorded event the moment a game exits (after the window is
+  // restored), so the hero and badges update without polling or a rescan.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<PlayHistory>("load_play_history")
+      .then((loaded) => {
+        if (!cancelled) setHistory(loaded);
+      })
+      .catch((error) => {
+        // Play activity is decoration, not core function: a failed load means
+        // badges are absent, never a broken Games screen.
+        console.error(`Failed to load play history: ${error}`);
+      });
+    const unlisten = listen<SessionRecorded>(SESSION_RECORDED_EVENT, (event) =>
+      setHistory((current) => ({
+        ...current,
+        [event.payload.releaseId]: event.payload.entry,
+      })),
+    );
+    return () => {
+      cancelled = true;
+      unlisten.then((stop) => stop());
+    };
+  }, []);
 
   // Derive one card per Game, then apply the active search/filter/sort. Memoised
   // so typing in the search box doesn't re-scan the catalog on unrelated
   // re-renders. The filtered set drives both the grid and the focus item count.
   const allCards = useMemo(() => gameCardInfos(catalog), [catalog]);
+  const playByGame = useMemo(
+    () => playEntriesByGame(catalog, history),
+    [catalog, history],
+  );
   const cards = useMemo(
-    () => filterGames(catalog, allCards, filter),
-    [catalog, allCards, filter],
+    () => filterGames(catalog, allCards, filter, playByGame),
+    [catalog, allCards, filter, playByGame],
   );
   const platforms = useMemo(() => availablePlatforms(catalog), [catalog]);
   const releaseTypes = useMemo(() => availableReleaseTypes(catalog), [catalog]);
 
-  // The roving focus loop covers every *visible* Game card plus the two action
-  // buttons, so arrow keys/D-pad can always reach them regardless of how many
-  // cards the filter leaves. It is suspended while the details panel is open —
-  // the panel runs its own focus loop, and only one may listen to the gamepad
-  // at a time.
-  const launchButtonIndex = cards.length;
+  // The "Continue Playing" hero: the most recently played Release, shown only
+  // on the unfiltered library view — a narrowed grid is a search result, and a
+  // hero pinned above it would not match the query.
+  const hero = useMemo(
+    () =>
+      isFilterActive(filter) ? null : mostRecentlyPlayed(catalog, history),
+    [catalog, history, filter],
+  );
+  const heroGame = hero
+    ? (games.find((g) => g.id === hero.release.gameId) ?? null)
+    : null;
+  // The hero previews a still (never an autoplaying video — that is the
+  // details panel's job), resolved with the Game-level artwork fallback.
+  const heroCover = hero
+    ? previewSource({
+        ...resolveMedia(hero.release.media, heroGame?.media),
+        video: undefined,
+      })
+    : null;
+  const heroCount = hero ? 1 : 0;
+
+  // The roving focus loop covers the hero (a leading full-width row), every
+  // *visible* Game card, and the two action buttons, so arrow keys/D-pad can
+  // always reach them regardless of how many cards the filter leaves. It is
+  // suspended while the details panel is open — the panel runs its own focus
+  // loop, and only one may listen to the gamepad at a time.
+  const launchButtonIndex = heroCount + cards.length;
   const rescanButtonIndex = launchButtonIndex + 1;
   const { containerRef, focusedIndex, registerItemRef, focusItem } =
     useGridFocus({
@@ -84,6 +146,7 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
       itemWidth: CARD_MIN_WIDTH_PX,
       gap: CARD_GAP_PX,
       enabled: selectedGame === null,
+      leadingFullWidth: heroCount,
     });
 
   async function launchTestGame() {
@@ -122,6 +185,20 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
     }
   }
 
+  // Flip a Game's favorite flag; the backend persists the catalog and returns
+  // it, which we hand back to `App` so every view sees the updated heart.
+  async function toggleFavorite(game: Game) {
+    try {
+      const updated = await invoke<Catalog>("set_favorite", {
+        gameId: game.id,
+        favorite: !game.favorite,
+      });
+      onCatalogChange(updated);
+    } catch (error) {
+      console.error(`Failed to update favorite: ${error}`);
+    }
+  }
+
   const selectedReleases = selectedGame
     ? peerReleases(catalog, selectedGame)
     : [];
@@ -140,6 +217,18 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
         totalCount={allCards.length}
       />
 
+      {hero && (
+        <ContinuePlayingHero
+          release={hero.release}
+          entry={hero.entry}
+          coverSlot={heroCover?.slot}
+          isFocused={focusedIndex === 0}
+          registerRef={registerItemRef(0)}
+          onFocus={() => focusItem(0)}
+          onResume={launchRelease}
+        />
+      )}
+
       <GameGrid
         cards={cards}
         containerRef={containerRef}
@@ -147,6 +236,8 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
         registerItemRef={registerItemRef}
         focusItem={focusItem}
         onSelectGame={setSelectedGameId}
+        indexOffset={heroCount}
+        playByGame={playByGame}
       />
 
       {cards.length === 0 && (
@@ -201,6 +292,9 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
           developer={selectedGame.developer}
           releases={selectedReleases}
           gameMedia={selectedGame.media}
+          history={history}
+          favorite={selectedGame.favorite === true}
+          onToggleFavorite={() => toggleFavorite(selectedGame)}
           onLaunch={launchRelease}
           onClose={() => setSelectedGameId(null)}
         />
