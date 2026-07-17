@@ -3,6 +3,7 @@ mod launch;
 mod media;
 mod playhistory;
 mod scanner;
+mod scrape;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,7 +23,8 @@ pub fn run() {
             catalog::save_media,
             catalog::set_favorite,
             playhistory::load_play_history,
-            scanner::scan_vault
+            scanner::scan_vault,
+            scrape::scrape_release_artwork
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

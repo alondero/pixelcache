@@ -13,10 +13,13 @@ import sampleCatalog from "../../src-tauri/resources/catalog.json";
  * builds or the real desktop app.
  */
 export function installBrowserMocks(): void {
-  const catalog = sampleCatalog as unknown as Catalog;
+  // Mutable so the mock `scrape_release_artwork` can fill media in and the
+  // whole app observes the update, like the real backend persisting.
+  let catalog = structuredClone(sampleCatalog) as unknown as Catalog;
   let nextPid = 1;
+  let scrapeCount = 0;
 
-  mockIPC((cmd, args) => {
+  mockIPC(async (cmd, args) => {
     switch (cmd) {
       case "load_catalog":
       case "scan_vault":
@@ -28,6 +31,44 @@ export function installBrowserMocks(): void {
           (args as { releaseId?: string } | undefined)?.releaseId ??
           "unknown-release";
         return { program: `browser-mock:${releaseId}`, pid: nextPid++ };
+      }
+      case "scrape_release_artwork": {
+        const releaseId = (args as { releaseId?: string } | undefined)
+          ?.releaseId;
+        const release = catalog.releases.find((r) => r.id === releaseId);
+        if (!release) throw new Error(`unknown release '${releaseId}'`);
+        // Pace the loop so the progress UI is observable in a browser; keep
+        // unit tests instant.
+        if (!import.meta.env.TEST) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+        // Every third release "has no thumbnail" so the summary shows a
+        // realistic mixed result.
+        const found = ++scrapeCount % 3 !== 0;
+        if (found) {
+          catalog = {
+            ...catalog,
+            releases: catalog.releases.map((r) =>
+              r.id === release.id
+                ? {
+                    ...r,
+                    media: {
+                      ...r.media,
+                      boxart: r.media?.boxart ?? `media/${r.id}/boxart.png`,
+                      image: r.media?.image ?? `media/${r.id}/boxart.png`,
+                      screenshot:
+                        r.media?.screenshot ?? `media/${r.id}/screenshot.png`,
+                    },
+                  }
+                : r,
+            ),
+          };
+        }
+        return {
+          status: found ? "found" : "missing",
+          slots: found ? ["boxart", "screenshot"] : [],
+          catalog,
+        };
       }
       default:
         throw new Error(`no browser mock for Tauri command "${cmd}"`);

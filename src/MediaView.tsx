@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Catalog, Media } from "./catalog";
 import { primaryReleaseTitle } from "./catalogView";
+import ArtworkScraper from "./ArtworkScraper";
 import {
   MEDIA_SLOTS,
   type MediaDraft,
@@ -101,6 +102,8 @@ function MediaView({ catalog, onCatalogChange }: MediaViewProps) {
         it. Paths resolve against the Release&rsquo;s Vault (or bundled media)
         and are served over the media protocol.
       </p>
+
+      <ArtworkScraper catalog={catalog} onCatalogChange={onCatalogChange} />
 
       {games.length === 0 && (
         <p className="status" role="status">
