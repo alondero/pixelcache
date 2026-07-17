@@ -14,6 +14,21 @@ npm-debug.log*
 .DS_Store
 *.local
 
+# Claude Code worktrees live under .claude but are per-session scratch
+.claude/worktrees/
+.claude/settings.local.json
+
+# Per-machine agent notes (see CLAUDE.local.md convention in user's global CLAUDE.md)
+CLAUDE.local.md
+
+# PLAYWRIGHT-CLI NOTE: removed from .gitignore for now — nothing in the shipped
+# tree currently produces a `.playwright-cli/` directory, and a defensive
+# ignore would obscure real commits if/when one is added later.
+
+# playwright-cli session artifacts (snapshots, screenshots, logs) — produced
+# whenever the verify-ui skill drives a browser run; reproduced every session.
+.playwright-cli/
+
 # Git-bash / Cygwin crash dumps (ephemeral)
 *.stackdump
 
