@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { Media, Release } from "./catalog";
 import { mediaSrc, previewSource, resolveMedia } from "./media";
+import {
+  formatLastPlayed,
+  formatPlayCount,
+  formatPlayTime,
+  type PlayHistory,
+} from "./playHistory";
 import { useGridFocus } from "./useGridFocus";
 
 interface GameDetailsPanelProps {
@@ -11,8 +17,15 @@ interface GameDetailsPanelProps {
   releases: Release[];
   /** Game-level fallback media, filling slots a highlighted Release leaves unset. */
   gameMedia?: Media;
+  /** Per-Release play activity for the release rows' stats line. */
+  history?: PlayHistory;
+  /** Whether the Game is currently favorited (drives the heart toggle). */
+  favorite?: boolean;
+  onToggleFavorite?: () => void;
   onLaunch: (release: Release) => void;
   onClose: () => void;
+  /** Wall-clock time for the per-release "last X ago" caption. */
+  now: number;
 }
 
 // Wider than any real panel, so the roving-focus math always resolves to a
@@ -36,8 +49,12 @@ function GameDetailsPanel({
   developer,
   releases,
   gameMedia,
+  history = {},
+  favorite = false,
+  onToggleFavorite,
   onLaunch,
   onClose,
+  now,
 }: GameDetailsPanelProps) {
   // Which release drives the preview pane. Focus (keyboard/gamepad) and hover
   // both update it, so mouse and controller users get the same behavior.
@@ -48,8 +65,12 @@ function GameDetailsPanel({
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const previousVideoSrc = useRef<string | null>(null);
 
-  // Roving focus over every release row plus the Close button at the end.
-  const closeIndex = releases.length;
+  // Roving focus over every release row plus the header's Favorite toggle and
+  // Close button at the end, so a controller can heart a game without a mouse.
+  // The toggle only joins the loop when a handler is wired up — a dead index
+  // would leave D-pad focus stranded on nothing.
+  const favoriteIndex = onToggleFavorite ? releases.length : -1;
+  const closeIndex = releases.length + (onToggleFavorite ? 1 : 0);
   const { containerRef, focusedIndex, registerItemRef } = useGridFocus({
     itemCount: closeIndex + 1,
     itemWidth: SINGLE_COLUMN_ITEM_WIDTH,
@@ -98,16 +119,35 @@ function GameDetailsPanel({
             <h2 className="details-title">{title}</h2>
             {developer && <p className="details-developer">{developer}</p>}
           </div>
-          <button
-            type="button"
-            className={`details-close${focusedIndex === closeIndex ? " is-focused" : ""}`}
-            aria-label="Close"
-            onClick={onClose}
-            ref={registerItemRef(closeIndex)}
-            tabIndex={focusedIndex === closeIndex ? 0 : -1}
-          >
-            ✕
-          </button>
+          <div className="details-header-actions">
+            {onToggleFavorite && (
+              <button
+                type="button"
+                className={`details-favorite${favorite ? " is-favorite" : ""}${
+                  focusedIndex === favoriteIndex ? " is-focused" : ""
+                }`}
+                aria-label={
+                  favorite ? "Remove from favorites" : "Add to favorites"
+                }
+                aria-pressed={favorite}
+                onClick={onToggleFavorite}
+                ref={registerItemRef(favoriteIndex)}
+                tabIndex={focusedIndex === favoriteIndex ? 0 : -1}
+              >
+                {favorite ? "♥" : "♡"}
+              </button>
+            )}
+            <button
+              type="button"
+              className={`details-close${focusedIndex === closeIndex ? " is-focused" : ""}`}
+              aria-label="Close"
+              onClick={onClose}
+              ref={registerItemRef(closeIndex)}
+              tabIndex={focusedIndex === closeIndex ? 0 : -1}
+            >
+              ✕
+            </button>
+          </div>
         </header>
 
         <div className="release-preview">
@@ -161,6 +201,18 @@ function GameDetailsPanel({
                   <span className="release-row-meta">
                     {releaseMeta(release)}
                   </span>
+                  {history[release.id] && (
+                    <span className="release-row-activity">
+                      {[
+                        formatPlayCount(history[release.id].playCount),
+                        formatPlayTime(history[release.id].totalPlayMs),
+                        `last ${formatLastPlayed(
+                          history[release.id].lastPlayedMs,
+                          now,
+                        )}`,
+                      ].join(" · ")}
+                    </span>
+                  )}
                 </span>
               </button>
             </li>

@@ -16,6 +16,24 @@ import type { Catalog } from "./catalog";
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
+// The event bridge is likewise Tauri-only. `listen` resolves to an unlisten
+// function; tests that exercise the session-recorded flow fire `emitEvent`.
+const eventHandlers = vi.hoisted(
+  () => new Map<string, (event: { payload: unknown }) => void>(),
+);
+const listen = vi.hoisted(() =>
+  vi.fn((event: string, handler: (event: { payload: unknown }) => void) => {
+    eventHandlers.set(event, handler);
+    return Promise.resolve(() => eventHandlers.delete(event));
+  }),
+);
+vi.mock("@tauri-apps/api/event", () => ({ listen }));
+
+/** Deliver a backend event to the component under test, as Tauri would. */
+function emitEvent(event: string, payload: unknown) {
+  eventHandlers.get(event)?.({ payload });
+}
+
 const sampleCatalog: Catalog = {
   games: [
     {
@@ -95,6 +113,14 @@ function mockInvoke({
   launchRelease = () => Promise.resolve({ program: "mupen64plus", pid: 777 }),
   saveDecks = (decks: unknown) => Promise.resolve({ ...sampleCatalog, decks }),
   testDeck = () => Promise.resolve({ program: "retroarch", pid: 555 }),
+  playHistory = () => Promise.resolve({}),
+  setFavorite = (gameId: string, favorite: boolean) =>
+    Promise.resolve({
+      ...sampleCatalog,
+      games: sampleCatalog.games.map((g) =>
+        g.id === gameId ? { ...g, favorite } : g,
+      ),
+    }),
 }: {
   catalog?: () => Promise<unknown>;
   launch?: () => Promise<unknown>;
@@ -102,6 +128,8 @@ function mockInvoke({
   launchRelease?: (releaseId: string) => Promise<unknown>;
   saveDecks?: (decks: unknown) => Promise<unknown>;
   testDeck?: (deck: unknown) => Promise<unknown>;
+  playHistory?: () => Promise<unknown>;
+  setFavorite?: (gameId: string, favorite: boolean) => Promise<unknown>;
 } = {}) {
   // Promises are constructed lazily (inside the mock implementation, not as
   // default-parameter values) so a rejection isn't created until `invoke` is
@@ -110,7 +138,13 @@ function mockInvoke({
   invoke.mockImplementation(
     (
       command: string,
-      args?: { releaseId?: string; decks?: unknown; deck?: unknown },
+      args?: {
+        releaseId?: string;
+        decks?: unknown;
+        deck?: unknown;
+        gameId?: string;
+        favorite?: boolean;
+      },
     ) => {
       if (command === "load_catalog") return catalog();
       if (command === "launch_test_game") return launch();
@@ -119,6 +153,9 @@ function mockInvoke({
         return launchRelease(args?.releaseId ?? "");
       if (command === "save_decks") return saveDecks(args?.decks);
       if (command === "test_launch_deck") return testDeck(args?.deck);
+      if (command === "load_play_history") return playHistory();
+      if (command === "set_favorite")
+        return setFavorite(args?.gameId ?? "", args?.favorite ?? false);
       throw new Error(`unexpected invoke command: ${command}`);
     },
   );
@@ -592,5 +629,236 @@ describe("App", () => {
 
     // The only deck is removed, so save_decks persists an empty deck set.
     await waitFor(() => expect(saveDecks).toHaveBeenCalledWith([]));
+  });
+});
+
+describe("Play activity & favorites", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    eventHandlers.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const playedHistory = {
+    "lylat-wars-pal": {
+      playCount: 3,
+      totalPlayMs: 2 * 3_600_000,
+      lastPlayedMs: Date.now() - 3_600_000,
+    },
+  };
+
+  it("shows a Continue Playing hero for the most recent release and resumes it", async () => {
+    mockInvoke({ playHistory: () => Promise.resolve(playedHistory) });
+    render(<App />);
+
+    const hero = await screen.findByRole("button", {
+      name: /continue playing lylat wars/i,
+    });
+    expect(hero).toHaveTextContent(/1h ago/i);
+    expect(hero).toHaveTextContent(/played 3 times/i);
+    expect(hero).toHaveTextContent(/2h\b/);
+
+    await userEvent.click(hero);
+    expect(invoke).toHaveBeenCalledWith("launch_release", {
+      releaseId: "lylat-wars-pal",
+    });
+  });
+
+  it("hides the hero while a filter narrows the grid", async () => {
+    mockInvoke({ playHistory: () => Promise.resolve(playedHistory) });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: /continue playing/i });
+    await user.type(screen.getByRole("searchbox"), "metroid");
+    expect(
+      screen.queryByRole("button", { name: /continue playing/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows played-recency on cards instead of the release count", async () => {
+    mockInvoke({ playHistory: () => Promise.resolve(playedHistory) });
+    render(<App />);
+
+    // Star Fox 64's card aggregates its PAL release's activity. The badge
+    // appears once the async history load resolves, so wait for it.
+    const card = (
+      await screen.findAllByRole("gridcell", { name: /star fox 64/i })
+    )[0];
+    await waitFor(() => expect(card).toHaveTextContent(/played 1h ago/i));
+  });
+
+  it("updates the grid live when the backend records a session", async () => {
+    mockInvoke();
+    render(<App />);
+
+    await screen.findByText("Metroid");
+    expect(
+      screen.queryByRole("button", { name: /continue playing/i }),
+    ).not.toBeInTheDocument();
+
+    emitEvent("play-session-recorded", {
+      releaseId: "metroid-ntsc",
+      entry: {
+        playCount: 1,
+        totalPlayMs: 10 * 60_000,
+        lastPlayedMs: Date.now(),
+      },
+    });
+
+    expect(
+      await screen.findByRole("button", {
+        name: /continue playing metroid/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("toggles a favorite from the details panel and shows the card badge", async () => {
+    const setFavorite = vi.fn((gameId: string, favorite: boolean) =>
+      Promise.resolve({
+        ...sampleCatalog,
+        games: sampleCatalog.games.map((g) =>
+          g.id === gameId ? { ...g, favorite } : g,
+        ),
+      }),
+    );
+    mockInvoke({ setFavorite });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      (await screen.findAllByRole("gridcell", { name: /star fox 64/i }))[0],
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /add to favorites/i }),
+    );
+
+    await waitFor(() =>
+      expect(setFavorite).toHaveBeenCalledWith("star-fox-64", true),
+    );
+    // The toggle flips in place…
+    expect(
+      await screen.findByRole("button", { name: /remove from favorites/i }),
+    ).toBeInTheDocument();
+    // …and the grid card behind the panel now wears the filled heart badge
+    // (`aria-pressed=true`, since the v2 badge is a button, not a static img).
+    expect(
+      await screen.findByRole("button", {
+        name: /remove star-fox-64 from favorites/i,
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("filters the grid to favorites with the toolbar toggle", async () => {
+    const favoritedCatalog = {
+      ...sampleCatalog,
+      games: sampleCatalog.games.map((g) =>
+        g.id === "metroid" ? { ...g, favorite: true } : g,
+      ),
+    };
+    mockInvoke({ catalog: () => Promise.resolve(favoritedCatalog) });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(
+      screen.getByRole("button", { name: /show favorites only/i }),
+    );
+
+    expect(screen.getByText("Metroid")).toBeInTheDocument();
+    expect(screen.queryByText("Star Fox 64")).not.toBeInTheDocument();
+  });
+});
+
+describe("Play activity & favorites v2", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    eventHandlers.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("one-press favorite from the grid (heart badge click)", async () => {
+    const setFavorite = vi.fn((gameId: string, favorite: boolean) =>
+      Promise.resolve({
+        ...sampleCatalog,
+        games: sampleCatalog.games.map((g) =>
+          g.id === gameId ? { ...g, favorite } : g,
+        ),
+      }),
+    );
+    mockInvoke({ setFavorite });
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Star Fox 64 starts unfavorited: its grid heart badge is the outline (♡).
+    const starFoxCard = (
+      await screen.findAllByRole("gridcell", { name: /star fox 64/i })
+    )[0];
+    const heart = within(starFoxCard).getByRole("button", {
+      name: /add star-fox-64 to favorites/i,
+    });
+    await user.click(heart);
+
+    await waitFor(() =>
+      expect(setFavorite).toHaveBeenCalledWith("star-fox-64", true),
+    );
+    // Clicking the badge must NOT have opened the details panel.
+    expect(
+      screen.queryByRole("dialog", { name: /star fox 64/i }),
+    ).not.toBeInTheDocument();
+    // And the heart filled in optimistically, before the IPC round-trip resolves.
+    expect(
+      within(
+        (await screen.findAllByRole("gridcell", { name: /star fox 64/i }))[0],
+      ).getByRole("button", {
+        name: /remove star-fox-64 from favorites/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("skips launches for releases whose filePath was emptied", async () => {
+    // The vault-rescan between sessions can produce a release whose filePath
+    // is empty (file moved/deleted). The hero must not surface it even when
+    // it has the most-recent history row.
+    const history = {
+      "star-fox-64-ntsc": {
+        playCount: 2,
+        totalPlayMs: 30_000,
+        lastPlayedMs: Date.now() - 60_000, // older than metroid's row below
+      },
+      "metroid-ntsc": {
+        playCount: 1,
+        totalPlayMs: 5_000,
+        lastPlayedMs: Date.now(),
+      },
+    };
+    const ghostCatalog = {
+      ...sampleCatalog,
+      releases: sampleCatalog.releases.map((r) =>
+        r.id === "star-fox-64-ntsc" ? { ...r, filePath: "" } : r,
+      ),
+    };
+    mockInvoke({
+      playHistory: () => Promise.resolve(history),
+      catalog: () => Promise.resolve(ghostCatalog),
+    });
+    render(<App />);
+
+    // Star Fox 64 has the newer history row by date but its release is now
+    // empty — so the hero should fall back to the still-launchable Metroid.
+    expect(
+      await screen.findByRole("button", { name: /continue playing metroid/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /continue playing star fox/i }),
+    ).not.toBeInTheDocument();
   });
 });

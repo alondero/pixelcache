@@ -50,6 +50,11 @@ interface UseGridFocusOptions {
    * instances would react to the same D-pad press and fight over focus.
    */
   enabled?: boolean;
+  /**
+   * How many of the first items are full-width rows stacked above the grid
+   * (e.g. the "Continue Playing" hero). See `moveFocusIndex`'s `leading`.
+   */
+  leadingFullWidth?: number;
 }
 
 interface UseGridFocusResult {
@@ -79,6 +84,7 @@ export function useGridFocus({
   itemWidth = 220,
   gap = 16,
   enabled = true,
+  leadingFullWidth = 0,
 }: UseGridFocusOptions): UseGridFocusResult {
   const containerRef = useRef<HTMLElement | null>(null);
   const itemRefs = useRef<Array<HTMLElement | null>>([]);
@@ -105,10 +111,16 @@ export function useGridFocus({
   const move = useCallback(
     (direction: Direction) => {
       setFocusedIndex((current) =>
-        moveFocusIndex(current, direction, itemCount, columns),
+        moveFocusIndex(
+          current,
+          direction,
+          itemCount,
+          columns,
+          leadingFullWidth,
+        ),
       );
     },
-    [itemCount, columns],
+    [itemCount, columns, leadingFullWidth],
   );
 
   useEffect(() => {

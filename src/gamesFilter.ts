@@ -10,11 +10,13 @@
  */
 import type { Catalog, Release, ReleaseType } from "./catalog";
 import type { GameCardInfo } from "./catalogView";
+import type { PlayEntry } from "./playHistory";
 
 /** Sentinel meaning "no filter on this dimension" for the select-backed filters. */
 export const ANY = "any";
 
-export type SortKey = "title-asc" | "title-desc" | "releases-desc";
+export type SortKey =
+  "title-asc" | "title-desc" | "releases-desc" | "last-played" | "most-played";
 
 /** The full set of controls backing the filter bar. */
 export interface FilterState {
@@ -24,6 +26,8 @@ export interface FilterState {
   platform: string;
   /** A [`ReleaseType`], or [`ANY`]. */
   releaseType: string;
+  /** When `true`, only Games marked favorite pass. */
+  favoritesOnly: boolean;
   sort: SortKey;
 }
 
@@ -32,6 +36,7 @@ export const DEFAULT_FILTER: FilterState = {
   query: "",
   platform: ANY,
   releaseType: ANY,
+  favoritesOnly: false,
   sort: "title-asc",
 };
 
@@ -94,10 +99,19 @@ function matchesQuery(
 }
 
 /** Comparator for the active [`SortKey`]; ties fall back to title A–Z. */
-function compareCards(a: GameCardInfo, b: GameCardInfo, sort: SortKey): number {
+function compareCards(
+  a: GameCardInfo,
+  b: GameCardInfo,
+  sort: SortKey,
+  playByGame: Map<string, PlayEntry>,
+): number {
   const byTitle = a.title.localeCompare(b.title, undefined, {
     sensitivity: "base",
   });
+  // Play-activity sorts put never-played games (no entry → 0) after played
+  // ones, then fall back to title so the unplayed tail stays browsable.
+  const entryA = playByGame.get(a.game.id);
+  const entryB = playByGame.get(b.game.id);
   switch (sort) {
     case "title-asc":
       return byTitle;
@@ -105,6 +119,12 @@ function compareCards(a: GameCardInfo, b: GameCardInfo, sort: SortKey): number {
       return -byTitle;
     case "releases-desc":
       return b.releaseCount - a.releaseCount || byTitle;
+    case "last-played":
+      return (
+        (entryB?.lastPlayedMs ?? 0) - (entryA?.lastPlayedMs ?? 0) || byTitle
+      );
+    case "most-played":
+      return (entryB?.totalPlayMs ?? 0) - (entryA?.totalPlayMs ?? 0) || byTitle;
   }
 }
 
@@ -119,11 +139,13 @@ export function filterGames(
   catalog: Catalog,
   cards: GameCardInfo[],
   filter: FilterState,
+  playByGame: Map<string, PlayEntry> = new Map(),
 ): GameCardInfo[] {
   const byGame = releasesByGame(catalog);
 
   const matched = cards.filter((card) => {
     const releases = byGame.get(card.game.id) ?? [];
+    if (filter.favoritesOnly && !card.game.favorite) return false;
     if (!matchesQuery(card, releases, filter.query)) return false;
     if (
       filter.platform !== ANY &&
@@ -140,7 +162,7 @@ export function filterGames(
     return true;
   });
 
-  return matched.sort((a, b) => compareCards(a, b, filter.sort));
+  return matched.sort((a, b) => compareCards(a, b, filter.sort, playByGame));
 }
 
 /** Whether any dimension of `filter` is narrowing the result (drives empty-state copy). */
@@ -148,6 +170,7 @@ export function isFilterActive(filter: FilterState): boolean {
   return (
     filter.query.trim() !== "" ||
     filter.platform !== ANY ||
-    filter.releaseType !== ANY
+    filter.releaseType !== ANY ||
+    filter.favoritesOnly
   );
 }

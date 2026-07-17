@@ -274,19 +274,29 @@ fn group_games(releases: &[Release], existing_games: &[Game]) -> Vec<Game> {
                 game.primary_release_id = release.id.clone();
             }
         } else {
-            // Seed developer / relations / media from the curated Game if we
-            // already had one under this id; a fresh Game starts with none.
-            let (developer, relations, media) = existing_games
+            // Seed developer / relations / media / favorite from the curated
+            // Game if we already had one under this id; a fresh Game starts
+            // with none. Curated fields must survive a rescan — dropping any
+            // of them here would silently wipe user edits.
+            let (developer, relations, media, favorite) = existing_games
                 .iter()
                 .find(|g| g.id == release.game_id)
-                .map(|g| (g.developer.clone(), g.relations.clone(), g.media.clone()))
-                .unwrap_or((None, Vec::new(), None));
+                .map(|g| {
+                    (
+                        g.developer.clone(),
+                        g.relations.clone(),
+                        g.media.clone(),
+                        g.favorite,
+                    )
+                })
+                .unwrap_or((None, Vec::new(), None, false));
             games.push(Game {
                 id: release.game_id.clone(),
                 developer,
                 primary_release_id: release.id.clone(),
                 relations,
                 media,
+                favorite,
             });
         }
     }
@@ -490,19 +500,22 @@ pub fn scan_vaults_to_files(vaults: &[Vault]) -> Result<Vec<RomFile>, ScanError>
 }
 
 /// Serialise `catalog` to pretty JSON and write it to `path`, creating parent
-/// directories as needed (IO).
+/// directories as needed (IO). Delegates to the shared atomic writer in
+/// [`crate::catalog`] so all callers of `catalog.json` (the scanner, the Decks
+/// settings save, the Media save, the new favorite toggle) race-safely rename
+/// over a single destination — a non-atomic write can otherwise truncate the
+/// file mid-flight and drop the user's curated fields.
 pub fn write_catalog(catalog: &Catalog, path: &Path) -> Result<(), ScanError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ScanError::Write {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
     let json =
         serde_json::to_string_pretty(catalog).map_err(|source| ScanError::Serialize { source })?;
-    std::fs::write(path, json).map_err(|source| ScanError::Write {
-        path: path.display().to_string(),
-        source,
+    crate::catalog::write_catalog_string_atomic(&json, path).map_err(|e| match e {
+        crate::catalog::CatalogError::Write { path, source } => ScanError::Write { path, source },
+        // `write_catalog_string_atomic` only ever produces Write errors; the
+        // other CatalogError variants exist for the catalog-loading path.
+        other => ScanError::Write {
+            path: path.display().to_string(),
+            source: std::io::Error::other(other.to_string()),
+        },
     })
 }
 

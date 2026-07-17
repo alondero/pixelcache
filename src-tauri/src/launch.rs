@@ -449,13 +449,28 @@ fn log_if_err<E: fmt::Display>(context: &str, result: Result<(), E>) {
 /// synchronously with fakes. Both a failed `wait` and a failed `show` are logged
 /// rather than propagated — there is no caller left to handle them, and the window
 /// must be re-shown on a best-effort basis no matter how the child exited.
-pub fn wait_and_restore<C: WaitableChild, W: RestorableWindow>(mut child: C, window: W) {
+pub fn wait_and_restore<C: WaitableChild, W: RestorableWindow>(child: C, window: W) {
+    wait_and_restore_then(child, window, || ());
+}
+
+/// [`wait_and_restore`] with an `on_exit` hook that runs **after** the window is
+/// restored — the ordering matters: bookkeeping (like recording a play session)
+/// must never delay the window coming back, and the hook still runs even when
+/// the wait or the restore failed, since a session was genuinely played either
+/// way.
+pub fn wait_and_restore_then<C, W, F>(mut child: C, window: W, on_exit: F)
+where
+    C: WaitableChild,
+    W: RestorableWindow,
+    F: FnOnce(),
+{
     let pid = child.id();
     log_if_err(
         &format!("failed to wait on launched process {pid}"),
         child.wait(),
     );
     log_if_err("failed to restore window after launch", window.show());
+    on_exit();
 }
 
 /// The production exit-watcher: move the child + window onto a background OS
@@ -525,6 +540,12 @@ pub async fn launch_test_game(window: tauri::WebviewWindow) -> Result<LaunchResu
 /// successful spawn and restored by the background exit-watcher when the game
 /// exits (issue #7). A resolution failure (unknown release, missing Deck) returns
 /// before the window is ever touched, so the UI stays visible.
+/// Play-session recording is layered on here (not in [`launch_test_game`] or
+/// [`test_launch_deck`]): only a real Release launch counts as play activity.
+/// The session clock starts at spawn and stops when the exit-watcher sees the
+/// child die; [`crate::playhistory::record_session_end`] then persists the
+/// session and notifies the frontend — after the window is restored, so
+/// bookkeeping can never delay the UI's return.
 #[tauri::command]
 pub async fn launch_release(
     app: tauri::AppHandle,
@@ -542,7 +563,20 @@ pub async fn launch_release(
     )
     .map_err(|e| e.to_string())?;
     let program = spec.program.clone();
-    launch_with(program, window, || spawn(&spec), watch_on_thread).map_err(|e| e.to_string())
+    let started = std::time::Instant::now();
+    launch_with(
+        program,
+        window,
+        || spawn(&spec),
+        move |child, win| {
+            std::thread::spawn(move || {
+                wait_and_restore_then(child, win, move || {
+                    crate::playhistory::record_session_end(&app, &release_id, started.elapsed());
+                });
+            });
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Tauri command backing the "Test launch" button on the Decks settings screen.
@@ -1060,6 +1094,47 @@ mod tests {
         wait_and_restore(child, window);
 
         assert_eq!(shown.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn wait_and_restore_then_runs_hook_after_window_restore() {
+        let child = FakeChild {
+            id: 9,
+            waited: Arc::new(AtomicBool::new(false)),
+            wait_fails: false,
+        };
+        let window = FakeWindow::new();
+        let shown = window.shown.clone();
+        let shown_when_hook_ran = Arc::new(AtomicUsize::new(usize::MAX));
+        let observed = shown_when_hook_ran.clone();
+        let shown_for_hook = shown.clone();
+
+        wait_and_restore_then(child, window, move || {
+            // Capture how many `show` calls had happened by hook time: exactly
+            // one proves the ordering "restore first, bookkeeping second".
+            observed.store(shown_for_hook.load(Ordering::SeqCst), Ordering::SeqCst);
+        });
+
+        assert_eq!(shown_when_hook_ran.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn wait_and_restore_then_runs_hook_even_when_wait_fails() {
+        // A session was still played even if observing the exit failed; the
+        // recording hook must not silently vanish with it.
+        let child = FakeChild {
+            id: 10,
+            waited: Arc::new(AtomicBool::new(false)),
+            wait_fails: true,
+        };
+        let hook_ran = Arc::new(AtomicBool::new(false));
+        let flag = hook_ran.clone();
+
+        wait_and_restore_then(child, FakeWindow::new(), move || {
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        assert!(hook_ran.load(Ordering::SeqCst));
     }
 
     #[test]

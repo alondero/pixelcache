@@ -1,6 +1,7 @@
 mod catalog;
 mod launch;
 mod media;
+mod playhistory;
 mod scanner;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -19,6 +20,8 @@ pub fn run() {
             catalog::load_catalog,
             catalog::save_decks,
             catalog::save_media,
+            catalog::set_favorite,
+            playhistory::load_play_history,
             scanner::scan_vault
         ])
         .run(tauri::generate_context!())

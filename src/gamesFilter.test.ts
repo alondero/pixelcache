@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Catalog } from "./catalog";
 import { gameCardInfos } from "./catalogView";
+import type { PlayEntry } from "./playHistory";
 import {
   ANY,
   availablePlatforms,
@@ -80,10 +81,15 @@ function catalog(): Catalog {
   };
 }
 
-function run(filter: Partial<FilterState>): string[] {
-  const data = catalog();
+function run(
+  filter: Partial<FilterState>,
+  playByGame?: Map<string, PlayEntry>,
+  data: Catalog = catalog(),
+): string[] {
   const state = { ...DEFAULT_FILTER, ...filter };
-  return filterGames(data, gameCardInfos(data), state).map((c) => c.game.id);
+  return filterGames(data, gameCardInfos(data), state, playByGame).map(
+    (c) => c.game.id,
+  );
 }
 
 describe("availablePlatforms", () => {
@@ -182,6 +188,69 @@ describe("filterGames — sort", () => {
   });
 });
 
+describe("filterGames — favorites", () => {
+  function favoritedCatalog(): Catalog {
+    const data = catalog();
+    data.games = data.games.map((g) =>
+      g.id === "metroid" ? { ...g, favorite: true } : g,
+    );
+    return data;
+  }
+
+  it("favoritesOnly keeps only favorited games", () => {
+    expect(run({ favoritesOnly: true }, undefined, favoritedCatalog())).toEqual(
+      ["metroid"],
+    );
+  });
+
+  it("favoritesOnly combines with the other dimensions as AND", () => {
+    expect(
+      run(
+        { favoritesOnly: true, platform: "n64" },
+        undefined,
+        favoritedCatalog(),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("filterGames — play-activity sorts", () => {
+  const play = new Map<string, PlayEntry>([
+    [
+      "metroid",
+      { playCount: 1, totalPlayMs: 10 * 60_000, lastPlayedMs: 5_000 },
+    ],
+    [
+      "super-mario-bros-3",
+      { playCount: 4, totalPlayMs: 90 * 60_000, lastPlayedMs: 2_000 },
+    ],
+  ]);
+
+  it("last-played puts the most recent first and never-played last, by title", () => {
+    expect(run({ sort: "last-played" }, play)).toEqual([
+      "metroid",
+      "super-mario-bros-3",
+      "star-fox-64",
+    ]);
+  });
+
+  it("most-played orders by total play time, never-played last", () => {
+    expect(run({ sort: "most-played" }, play)).toEqual([
+      "super-mario-bros-3",
+      "metroid",
+      "star-fox-64",
+    ]);
+  });
+
+  it("play-activity sorts degrade to title order without history", () => {
+    expect(run({ sort: "last-played" })).toEqual([
+      "metroid",
+      "star-fox-64",
+      "super-mario-bros-3",
+    ]);
+  });
+});
+
 describe("filterGames — purity", () => {
   it("does not mutate the input cards array", () => {
     const data = catalog();
@@ -207,6 +276,9 @@ describe("isFilterActive", () => {
     expect(isFilterActive({ ...DEFAULT_FILTER, query: "x" })).toBe(true);
     expect(isFilterActive({ ...DEFAULT_FILTER, platform: "n64" })).toBe(true);
     expect(isFilterActive({ ...DEFAULT_FILTER, releaseType: "hack" })).toBe(
+      true,
+    );
+    expect(isFilterActive({ ...DEFAULT_FILTER, favoritesOnly: true })).toBe(
       true,
     );
   });

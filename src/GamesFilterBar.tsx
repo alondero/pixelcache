@@ -19,6 +19,8 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "title-asc", label: "Title A–Z" },
   { value: "title-desc", label: "Title Z–A" },
   { value: "releases-desc", label: "Most releases" },
+  { value: "last-played", label: "Recently played" },
+  { value: "most-played", label: "Most played" },
 ];
 
 /** Title-case a release type for display ("retail" → "Retail"). */
@@ -107,6 +109,19 @@ function GamesFilterBar({
           ))}
         </select>
       </label>
+
+      <button
+        type="button"
+        className={`favorites-toggle${filter.favoritesOnly ? " is-active" : ""}`}
+        aria-pressed={filter.favoritesOnly}
+        aria-label="Show favorites only"
+        title="Show favorites only"
+        onClick={() =>
+          onChange({ ...filter, favoritesOnly: !filter.favoritesOnly })
+        }
+      >
+        {filter.favoritesOnly ? "♥" : "♡"} Favorites
+      </button>
 
       <span className="results-count" aria-live="polite">
         {resultCount === totalCount
