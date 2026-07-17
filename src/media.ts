@@ -44,15 +44,16 @@ export function resolveMedia(release?: Media, game?: Media): Media {
 }
 
 /**
- * The best preview for a resolved media set: the moving `video` if present,
- * otherwise the first available still (cover image, then screenshot, box art,
- * fanart, logo, marquee). Returns `null` when nothing is set. The caller turns
- * the `{ kind, slot }` into a protocol URL via {@link mediaSrc}.
+ * The best still for a resolved media set, ignoring the moving `video` slot.
+ * The Continue Playing hero, the games grid, and any other surface that
+ * shows a static thumbnail use this so the artwork fallback chain is in one
+ * place — and so the hero never tries to autoplay a video where the rest of
+ * the grid is still. The slot order (cover, screenshot, boxart, fanart, logo,
+ * marquee) matches `previewSource`'s still precedence.
  */
-export function previewSource(
+export function stillSource(
   media: Media,
-): { kind: "video" | "image"; slot: MediaSlot } | null {
-  if (media.video) return { kind: "video", slot: "video" };
+): { kind: "image"; slot: MediaSlot } | null {
   const stillOrder: MediaSlot[] = [
     "image",
     "screenshot",
@@ -65,6 +66,19 @@ export function previewSource(
     if (media[slot]) return { kind: "image", slot };
   }
   return null;
+}
+
+/**
+ * The best preview for a resolved media set: the moving `video` if present,
+ * otherwise the first available still (cover image, then screenshot, box art,
+ * fanart, logo, marquee). Returns `null` when nothing is set. The caller turns
+ * the `{ kind, slot }` into a protocol URL via {@link mediaSrc}.
+ */
+export function previewSource(
+  media: Media,
+): { kind: "video" | "image"; slot: MediaSlot } | null {
+  if (media.video) return { kind: "video", slot: "video" };
+  return stillSource(media);
 }
 
 /**

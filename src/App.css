@@ -316,7 +316,10 @@
   color: rgba(255, 255, 255, 0.55);
 }
 
-/* Heart badge floating over the card cover's top-right corner. */
+/* Heart badge floating over the card cover's top-right corner — always
+ * visible (filled vs outline) so the favorite gesture is discoverable from
+ * the grid; clicking it is a one-press toggle that does NOT open the
+ * details panel (see GameGrid). */
 .game-card-favorite {
   position: absolute;
   top: 1.35rem;
@@ -324,12 +327,33 @@
   z-index: 1;
   font-size: 0.9rem;
   line-height: 1;
-  padding: 0.3rem;
+  padding: 0.3rem 0.4rem;
   border-radius: 999px;
-  color: #ff7d9c;
+  color: rgba(255, 255, 255, 0.55);
   background: rgba(10, 10, 18, 0.55);
   backdrop-filter: blur(6px);
-  border: 1px solid rgba(255, 125, 156, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    transform 0.12s ease,
+    background 0.12s ease;
+}
+
+.game-card-favorite:hover {
+  color: #ff7d9c;
+  border-color: rgba(255, 125, 156, 0.45);
+  background: rgba(255, 125, 156, 0.12);
+}
+
+.game-card-favorite.is-favorite {
+  color: #ff7d9c;
+  border-color: rgba(255, 125, 156, 0.45);
+  background: rgba(255, 125, 156, 0.15);
+}
+
+.game-card-favorite.is-favorite:active {
+  transform: scale(1.18);
 }
 
 /* ---- Continue Playing hero: one press back into the last game ---- */

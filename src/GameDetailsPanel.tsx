@@ -24,6 +24,8 @@ interface GameDetailsPanelProps {
   onToggleFavorite?: () => void;
   onLaunch: (release: Release) => void;
   onClose: () => void;
+  /** Wall-clock time for the per-release "last X ago" caption. */
+  now: number;
 }
 
 // Wider than any real panel, so the roving-focus math always resolves to a
@@ -52,6 +54,7 @@ function GameDetailsPanel({
   onToggleFavorite,
   onLaunch,
   onClose,
+  now,
 }: GameDetailsPanelProps) {
   // Which release drives the preview pane. Focus (keyboard/gamepad) and hover
   // both update it, so mouse and controller users get the same behavior.
@@ -205,7 +208,7 @@ function GameDetailsPanel({
                         formatPlayTime(history[release.id].totalPlayMs),
                         `last ${formatLastPlayed(
                           history[release.id].lastPlayedMs,
-                          Date.now(),
+                          now,
                         )}`,
                       ].join(" · ")}
                     </span>

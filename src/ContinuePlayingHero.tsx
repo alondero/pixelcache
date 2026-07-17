@@ -20,6 +20,9 @@ interface ContinuePlayingHeroProps {
   /** Sync the roving focus when the hero gains focus by mouse. */
   onFocus: () => void;
   onResume: (release: Release) => void;
+  /** Wall-clock time used by `formatLastPlayed`; pass `useMinuteTick`'s output
+   * so the caption advances without the user having to focus a card. */
+  now: number;
 }
 
 /**
@@ -37,9 +40,10 @@ function ContinuePlayingHero({
   registerRef,
   onFocus,
   onResume,
+  now,
 }: ContinuePlayingHeroProps) {
   const activity = [
-    formatLastPlayed(entry.lastPlayedMs, Date.now()),
+    formatLastPlayed(entry.lastPlayedMs, now),
     formatPlayCount(entry.playCount),
     formatPlayTime(entry.totalPlayMs),
   ].join(" · ");

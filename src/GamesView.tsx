@@ -21,7 +21,7 @@ import GameDetailsPanel from "./GameDetailsPanel";
 import GameGrid from "./GameGrid";
 import GamesFilterBar from "./GamesFilterBar";
 import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
-import { previewSource, resolveMedia } from "./media";
+import { resolveMedia, stillSource } from "./media";
 import {
   mostRecentlyPlayed,
   playEntriesByGame,
@@ -30,6 +30,7 @@ import {
   type SessionRecorded,
 } from "./playHistory";
 import { useGridFocus } from "./useGridFocus";
+import { useMinuteTick } from "./useMinuteTick";
 
 type LaunchStatus =
   | { kind: "idle" }
@@ -59,6 +60,20 @@ interface GamesViewProps {
  * racing). The grid loop is additionally suspended while the details panel is
  * open, since the panel runs its own focus loop.
  */
+/** Return a new catalog with one Game's `favorite` flag set/cleared. Pure so the
+ * optimistic-update path is unit-testable in isolation. An unknown id is a
+ * tolerated no-op (the backend's `set_favorite` is likewise tolerant). */
+function stampFavorite(
+  catalog: Catalog,
+  gameId: string,
+  favorite: boolean,
+): Catalog {
+  return {
+    ...catalog,
+    games: catalog.games.map((g) => (g.id === gameId ? { ...g, favorite } : g)),
+  };
+}
+
 function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus>({
     kind: "idle",
@@ -67,6 +82,12 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterState>(DEFAULT_FILTER);
   const [history, setHistory] = useState<PlayHistory>({});
+  // One re-render per minute while the window is in the foreground so the
+  // "Played X ago" / "Continue Playing …" captions advance without the user
+  // having to focus or move the controller. Background tabs are throttled
+  // by `useMinuteTick`'s `visibilitychange` handler.
+  const nowTick = useMinuteTick();
+  const nowMs = Date.now() + nowTick;
 
   const games = catalog.games;
   const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
@@ -126,10 +147,7 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
   // The hero previews a still (never an autoplaying video — that is the
   // details panel's job), resolved with the Game-level artwork fallback.
   const heroCover = hero
-    ? previewSource({
-        ...resolveMedia(hero.release.media, heroGame?.media),
-        video: undefined,
-      })
+    ? stillSource(resolveMedia(hero.release.media, heroGame?.media))
     : null;
   const heroCount = hero ? 1 : 0;
 
@@ -185,17 +203,28 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
     }
   }
 
-  // Flip a Game's favorite flag; the backend persists the catalog and returns
-  // it, which we hand back to `App` so every view sees the updated heart.
-  async function toggleFavorite(game: Game) {
+  // Flip a Game's favorite flag. Optimistic by default: stamp the change onto
+  // the catalog the user sees **before** the IPC round-trip so the heart fills
+  // in the same frame as the controller press — and roll back on rejection
+  // so the UI never lies about the persisted state. The details panel passes
+  // `optimistic: false` because the panel is in a modal focus loop already
+  // and the heart is part of the user's deliberate confirmation path.
+  async function toggleFavorite(game: Game, optimistic = true) {
+    const nextFavorite = !game.favorite;
+    let rollback: Catalog = catalog;
+    if (optimistic) {
+      rollback = catalog;
+      onCatalogChange(stampFavorite(catalog, game.id, nextFavorite));
+    }
     try {
       const updated = await invoke<Catalog>("set_favorite", {
         gameId: game.id,
-        favorite: !game.favorite,
+        favorite: nextFavorite,
       });
       onCatalogChange(updated);
     } catch (error) {
       console.error(`Failed to update favorite: ${error}`);
+      if (optimistic) onCatalogChange(rollback);
     }
   }
 
@@ -226,6 +255,7 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
           registerRef={registerItemRef(0)}
           onFocus={() => focusItem(0)}
           onResume={launchRelease}
+          now={nowMs}
         />
       )}
 
@@ -236,8 +266,10 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
         registerItemRef={registerItemRef}
         focusItem={focusItem}
         onSelectGame={setSelectedGameId}
+        onToggleFavorite={(game) => toggleFavorite(game)}
         indexOffset={heroCount}
         playByGame={playByGame}
+        now={nowMs}
       />
 
       {cards.length === 0 && (
@@ -294,9 +326,10 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
           gameMedia={selectedGame.media}
           history={history}
           favorite={selectedGame.favorite === true}
-          onToggleFavorite={() => toggleFavorite(selectedGame)}
+          onToggleFavorite={() => toggleFavorite(selectedGame, false)}
           onLaunch={launchRelease}
           onClose={() => setSelectedGameId(null)}
+          now={nowMs}
         />
       )}
     </>

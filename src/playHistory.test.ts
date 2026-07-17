@@ -91,6 +91,22 @@ describe("mostRecentlyPlayed", () => {
     };
     expect(mostRecentlyPlayed(catalog, history)?.release.id).toBe("sf-ntsc");
   });
+
+  it("skips releases whose filePath was emptied by a rescan", () => {
+    // A more-recent history row on a now-unlaunchable release must not
+    // shadow a still-launchable earlier entry.
+    const empty: Catalog = {
+      ...catalog,
+      releases: catalog.releases.map((r) =>
+        r.id === "metroid-ntsc" ? { ...r, filePath: "" } : r,
+      ),
+    };
+    const history: PlayHistory = {
+      "metroid-ntsc": { playCount: 1, totalPlayMs: 1, lastPlayedMs: 1_000 },
+      "sf-ntsc": { playCount: 1, totalPlayMs: 1, lastPlayedMs: 100 },
+    };
+    expect(mostRecentlyPlayed(empty, history)?.release.id).toBe("sf-ntsc");
+  });
 });
 
 describe("formatLastPlayed", () => {

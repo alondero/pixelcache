@@ -744,10 +744,13 @@ describe("Play activity & favorites", () => {
     expect(
       await screen.findByRole("button", { name: /remove from favorites/i }),
     ).toBeInTheDocument();
-    // …and the grid card behind the panel now wears the heart badge.
+    // …and the grid card behind the panel now wears the filled heart badge
+    // (`aria-pressed=true`, since the v2 badge is a button, not a static img).
     expect(
-      await screen.findByRole("img", { name: /favorite/i }),
-    ).toBeInTheDocument();
+      await screen.findByRole("button", {
+        name: /remove star-fox-64 from favorites/i,
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
   });
 
   it("filters the grid to favorites with the toolbar toggle", async () => {
@@ -768,5 +771,94 @@ describe("Play activity & favorites", () => {
 
     expect(screen.getByText("Metroid")).toBeInTheDocument();
     expect(screen.queryByText("Star Fox 64")).not.toBeInTheDocument();
+  });
+});
+
+describe("Play activity & favorites v2", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    eventHandlers.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("one-press favorite from the grid (heart badge click)", async () => {
+    const setFavorite = vi.fn((gameId: string, favorite: boolean) =>
+      Promise.resolve({
+        ...sampleCatalog,
+        games: sampleCatalog.games.map((g) =>
+          g.id === gameId ? { ...g, favorite } : g,
+        ),
+      }),
+    );
+    mockInvoke({ setFavorite });
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Star Fox 64 starts unfavorited: its grid heart badge is the outline (♡).
+    const starFoxCard = (
+      await screen.findAllByRole("gridcell", { name: /star fox 64/i })
+    )[0];
+    const heart = within(starFoxCard).getByRole("button", {
+      name: /add star-fox-64 to favorites/i,
+    });
+    await user.click(heart);
+
+    await waitFor(() =>
+      expect(setFavorite).toHaveBeenCalledWith("star-fox-64", true),
+    );
+    // Clicking the badge must NOT have opened the details panel.
+    expect(
+      screen.queryByRole("dialog", { name: /star fox 64/i }),
+    ).not.toBeInTheDocument();
+    // And the heart filled in optimistically, before the IPC round-trip resolves.
+    expect(
+      within(
+        (await screen.findAllByRole("gridcell", { name: /star fox 64/i }))[0],
+      ).getByRole("button", {
+        name: /remove star-fox-64 from favorites/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("skips launches for releases whose filePath was emptied", async () => {
+    // The vault-rescan between sessions can produce a release whose filePath
+    // is empty (file moved/deleted). The hero must not surface it even when
+    // it has the most-recent history row.
+    const history = {
+      "star-fox-64-ntsc": {
+        playCount: 2,
+        totalPlayMs: 30_000,
+        lastPlayedMs: Date.now() - 60_000, // older than metroid's row below
+      },
+      "metroid-ntsc": {
+        playCount: 1,
+        totalPlayMs: 5_000,
+        lastPlayedMs: Date.now(),
+      },
+    };
+    const ghostCatalog = {
+      ...sampleCatalog,
+      releases: sampleCatalog.releases.map((r) =>
+        r.id === "star-fox-64-ntsc" ? { ...r, filePath: "" } : r,
+      ),
+    };
+    mockInvoke({
+      playHistory: () => Promise.resolve(history),
+      catalog: () => Promise.resolve(ghostCatalog),
+    });
+    render(<App />);
+
+    // Star Fox 64 has the newer history row by date but its release is now
+    // empty — so the hero should fall back to the still-launchable Metroid.
+    expect(
+      await screen.findByRole("button", { name: /continue playing metroid/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /continue playing star fox/i }),
+    ).not.toBeInTheDocument();
   });
 });

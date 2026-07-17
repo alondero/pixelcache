@@ -269,6 +269,12 @@ pub enum CatalogError {
         path: String,
         source: serde_json::Error,
     },
+    /// The catalog could not be persisted (create-dir, serialize, or atomic
+    /// rename failures).
+    Write {
+        path: String,
+        source: std::io::Error,
+    },
 }
 
 impl fmt::Display for CatalogError {
@@ -280,6 +286,9 @@ impl fmt::Display for CatalogError {
             CatalogError::Parse { path, source } => {
                 write!(f, "failed to parse catalog '{path}': {source}")
             }
+            CatalogError::Write { path, source } => {
+                write!(f, "failed to write catalog '{path}': {source}")
+            }
         }
     }
 }
@@ -289,6 +298,7 @@ impl std::error::Error for CatalogError {
         match self {
             CatalogError::Read { source, .. } => Some(source),
             CatalogError::Parse { source, .. } => Some(source),
+            CatalogError::Write { source, .. } => Some(source),
         }
     }
 }
@@ -349,10 +359,56 @@ pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
     load_bundled_catalog(&app)
 }
 
-/// Serialise `catalog` to the app data directory, where [`load_bundled_catalog`]
-/// prefers it over the bundled resource on the next load. This is the same
-/// destination the Import Scanner writes to, so a settings edit and a rescan both
-/// persist to the one catalog the user is actually viewing.
+/// Atomically write a serialized JSON payload to `path`: create parent
+/// directories, write to a pid-tagged sibling temp file, then rename over the
+/// destination. Several Tauri commands persist to the same `catalog.json`
+/// (`save_decks`, `save_media`, `set_favorite`, plus the scanner writes
+/// through the same path) and can be invoked back-to-back from the UI; a
+/// non-atomic write leaves the file truncated or half-old if a concurrent
+/// writer wins the rename race, silently dropping the user's curated fields
+/// (developer, media, favorite) that the rescan-reconcile rule is supposed
+/// to preserve.
+///
+/// A pid-tagged sibling file is enough for the only concurrent-writer case
+/// this sees (this process's own threads — every catalog command ultimately
+/// funnels through here on the Tauri runtime); `rename` is atomic on POSIX
+/// and `MoveFileExW` with REPLACE_EXISTING is atomic on Windows, so two
+/// writers either both succeed at distinct snapshots or one loses cleanly.
+/// The temp file is best-effort cleaned up on a failed rename.
+///
+/// Two entry points: [`write_catalog_atomically`] (serialize + write) for
+/// callers whose only failure mode is IO, and [`write_catalog_string_atomic`]
+/// for callers (the scanner) that want to surface a typed serialize error.
+pub fn write_catalog_string_atomic(json: &str, path: &Path) -> Result<(), CatalogError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| CatalogError::Write {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    let temp = path.with_extension(format!("json.{}", std::process::id()));
+    std::fs::write(&temp, json).map_err(|source| CatalogError::Write {
+        path: temp.display().to_string(),
+        source,
+    })?;
+    if let Err(source) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(CatalogError::Write {
+            path: path.display().to_string(),
+            source,
+        });
+    }
+    Ok(())
+}
+
+pub fn write_catalog_atomically(catalog: &Catalog, path: &Path) -> Result<(), CatalogError> {
+    let json = serde_json::to_string_pretty(catalog).map_err(|e| CatalogError::Write {
+        path: path.display().to_string(),
+        source: std::io::Error::other(format!("serialize: {e}")),
+    })?;
+    write_catalog_string_atomic(&json, path)
+}
+
 fn persist_catalog(app: &tauri::AppHandle, catalog: &Catalog) -> Result<(), String> {
     use tauri::Manager;
 
@@ -361,14 +417,7 @@ fn persist_catalog(app: &tauri::AppHandle, catalog: &Catalog) -> Result<(), Stri
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join(CATALOG_FILE_NAME);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create data dir '{}': {e}", parent.display()))?;
-    }
-    let json = serde_json::to_string_pretty(catalog)
-        .map_err(|e| format!("failed to serialize catalog: {e}"))?;
-    std::fs::write(&path, json)
-        .map_err(|e| format!("failed to write catalog '{}': {e}", path.display()))
+    write_catalog_atomically(catalog, &path).map_err(|e| e.to_string())
 }
 
 /// Tauri command backing the Decks settings screen: replace the catalog's Decks
@@ -857,6 +906,33 @@ mod tests {
         // An unknown id must be a tolerated no-op, not a panic or an error.
         let untouched = apply_favorite(cleared.clone(), "ghost", true);
         assert_eq!(untouched, cleared);
+    }
+
+    #[test]
+    fn atomic_write_overwrites_existing_file_without_a_partial_snapshot() {
+        // Regression for the favorite-toggling / rescan race: two near-simultaneous
+        // writes must never leave a half-truncated catalog.json on disk.
+        let dir =
+            std::env::temp_dir().join(format!("pixelcache-atomic-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("catalog.json");
+
+        // Seed a prior snapshot so the atomic path exercises the rename-over-existing
+        // branch on every supported platform.
+        std::fs::write(&path, r#"{"placeholder":true}"#).expect("seed");
+
+        let catalog = Catalog::from_json(sample_json()).expect("valid catalog json");
+        write_catalog_atomically(&catalog, &path).expect("write");
+        // The destination must be the new catalog's bytes — not a stale half,
+        // not a temp-file extension left behind.
+        let written = std::fs::read_to_string(&path).expect("read");
+        assert!(!written.contains("placeholder"));
+        assert!(written.contains("star-fox-64"));
+        assert!(!path
+            .with_extension(format!("json.{}", std::process::id()))
+            .exists());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

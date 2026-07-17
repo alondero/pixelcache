@@ -49,6 +49,7 @@ function renderPanel({
       releases={releases}
       onLaunch={onLaunch}
       onClose={onClose}
+      now={Date.now()}
     />,
   );
   return { onLaunch, onClose };
@@ -116,6 +117,7 @@ describe("GameDetailsPanel", () => {
         gameMedia={{ boxart: "star-fox-64/box.png" }}
         onLaunch={vi.fn()}
         onClose={vi.fn()}
+        now={Date.now()}
       />,
     );
 

@@ -76,11 +76,25 @@ export function playEntriesByGame(
 }
 
 /**
- * The single most recently played Release still present in the catalog — the
- * "Continue Playing" hero. Stale history rows (a Release since removed from the
- * Vault) are skipped rather than surfaced as an unlaunchable hero. Ties (same
- * millisecond) resolve to the first matching Release in catalog order so the
- * pick is deterministic. `null` when nothing has ever been played.
+ * A Release is a launch candidate for the "Continue Playing" hero only when it
+ * has a non-empty `filePath`. A stale entry (a Release whose file the user
+ * moved off-disk between rescans but whose history row persists) would
+ * otherwise become a "Press A to launch… an error" hero. The deeper
+ * existence-on-disk check happens at launch time in the backend
+ * (`resolve_rom_path`); this is the cheap synchronous filter that keeps the
+ * hero honest without dragging the filesystem into the UI render path.
+ */
+function isLaunchable(release: Release): boolean {
+  return release.filePath.trim().length > 0;
+}
+
+/**
+ * The single most recently played, still-launchable Release in the catalog —
+ * the "Continue Playing" hero. Stale history rows (a Release since removed
+ * from the Vault, or with an empty `filePath`) are skipped rather than
+ * surfaced as an unlaunchable hero. Ties (same millisecond) resolve to the
+ * first matching Release in catalog order so the pick is deterministic.
+ * `null` when nothing playable has ever been played.
  */
 export function mostRecentlyPlayed(
   catalog: Catalog,
@@ -88,6 +102,7 @@ export function mostRecentlyPlayed(
 ): { release: Release; entry: PlayEntry } | null {
   let best: { release: Release; entry: PlayEntry } | null = null;
   for (const release of catalog.releases) {
+    if (!isLaunchable(release)) continue;
     const entry = history[release.id];
     if (!entry) continue;
     if (!best || entry.lastPlayedMs > best.entry.lastPlayedMs) {
