@@ -409,7 +409,7 @@ pub fn write_catalog_atomically(catalog: &Catalog, path: &Path) -> Result<(), Ca
     write_catalog_string_atomic(&json, path)
 }
 
-fn persist_catalog(app: &tauri::AppHandle, catalog: &Catalog) -> Result<(), String> {
+pub(crate) fn persist_catalog(app: &tauri::AppHandle, catalog: &Catalog) -> Result<(), String> {
     use tauri::Manager;
 
     let path = app

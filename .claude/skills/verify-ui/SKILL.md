@@ -135,6 +135,15 @@ UI verified:
 - 2026-07-17 — Preview media plays from `public/media/`; the repo ships
   generated placeholders (test-pattern `.webm`, gradient `.webp`). Garish
   test-pattern previews are expected, not rendering bugs.
+- 2026-07-17 — To screenshot a transient state (progress bar, spinner), a
+  separate click-then-screenshot is too slow. Use
+  `playwright-cli run-code "async (page) => { ...click(); await page.waitForTimeout(500); await page.screenshot({ path: '...' }); }"`
+  — the argument must be an async arrow taking `page`.
+- 2026-07-17 — Pre-existing console errors in the browser mock: the nested
+  favorite-badge `<button>` hydration warning (GameGrid), a
+  `plugin:event|listen` "no browser mock" error (GamesView), and
+  `pixelcache-media.localhost` ERR_CONNECTION_REFUSED (the media protocol
+  only exists in the desktop WebView). Don't attribute these to new changes.
 
 ## Anti-patterns
 
