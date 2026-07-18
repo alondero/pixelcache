@@ -9,6 +9,10 @@ mod scrape;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Single-launch in-flight flag shared by every launch entry point
+        // (`launch_test_game`, `launch_release`, `test_launch_deck`) — see
+        // `launch::LaunchInFlight` and issue #9.
+        .manage(launch::LaunchInFlight::default())
         // Serve Release/Game artwork from the Vault (falling back to bundled
         // resources) over a custom asset protocol — see `media::respond`.
         .register_uri_scheme_protocol(media::MEDIA_SCHEME, |ctx, request| {

@@ -30,6 +30,9 @@ use serde::Serialize;
 use std::fmt;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tauri::Manager;
 
 /// Argument tokens replaced with the resolved ROM path when building a launch
 /// spec. Either spelling works, so a Deck can read as `-L core "{rom}"` or
@@ -92,6 +95,11 @@ pub enum LaunchError {
     /// A test-launch was requested for a [`DeckKind::DirectLaunch`] Deck, which
     /// has no emulator of its own to spawn without a Release.
     NotTestable { deck_id: String },
+    /// A second launch request arrived while another child was still being
+    /// watched. The Execution Engine intentionally supports only one in-flight
+    /// game (issue #9) — overlapping launches would race to re-show the window
+    /// when their respective children exit, with whichever exits first winning.
+    AlreadyInFlight,
 }
 
 impl fmt::Display for LaunchError {
@@ -115,6 +123,9 @@ impl fmt::Display for LaunchError {
                     "deck '{deck_id}' launches the game directly and has no emulator to test"
                 )
             }
+            LaunchError::AlreadyInFlight => {
+                write!(f, "a launch is already in flight")
+            }
         }
     }
 }
@@ -126,7 +137,8 @@ impl std::error::Error for LaunchError {
             LaunchError::UnknownRelease { .. }
             | LaunchError::NoDeckForPlatform { .. }
             | LaunchError::UnknownDeck { .. }
-            | LaunchError::NotTestable { .. } => None,
+            | LaunchError::NotTestable { .. }
+            | LaunchError::AlreadyInFlight => None,
         }
     }
 }
@@ -418,6 +430,16 @@ impl WaitableChild for std::process::Child {
 pub trait RestorableWindow {
     fn hide(&self) -> Result<(), String>;
     fn show(&self) -> Result<(), String>;
+    /// Returns `true` if the window can still be operated on (i.e. it has not
+    /// been destroyed by the user closing it mid-launch). Defaults to `true` so
+    /// fakes in unit tests stay trivial; the real implementation re-probes the
+    /// Tauri window registry — see the impl below. Used by the exit-watcher to
+    /// deliberately skip `show()` when there is no window to restore, instead of
+    /// falling through the generic "failed to restore window after launch" log
+    /// line by accident (issue #9).
+    fn is_alive(&self) -> bool {
+        true
+    }
 }
 
 impl RestorableWindow for tauri::WebviewWindow {
@@ -427,6 +449,15 @@ impl RestorableWindow for tauri::WebviewWindow {
 
     fn show(&self) -> Result<(), String> {
         tauri::WebviewWindow::show(self).map_err(|e| e.to_string())
+    }
+
+    fn is_alive(&self) -> bool {
+        // Tauri unregisters closed windows from the app's window registry, so a
+        // re-fetch by label returns `None` once the user closes the window
+        // mid-launch. `get_webview_window` is the canonical "is this handle
+        // still pointing at a real window?" check in Tauri v2 — there is no
+        // dedicated `is_destroyed` on `WebviewWindow`.
+        self.app_handle().get_webview_window(self.label()).is_some()
     }
 }
 
@@ -449,6 +480,8 @@ fn log_if_err<E: fmt::Display>(context: &str, result: Result<(), E>) {
 /// synchronously with fakes. Both a failed `wait` and a failed `show` are logged
 /// rather than propagated — there is no caller left to handle them, and the window
 /// must be re-shown on a best-effort basis no matter how the child exited.
+#[allow(dead_code)] // only invoked from unit tests in this crate; kept as the
+                    // canonical "no on_exit hook" wrapper around `wait_and_restore_then`.
 pub fn wait_and_restore<C: WaitableChild, W: RestorableWindow>(child: C, window: W) {
     wait_and_restore_then(child, window, || ());
 }
@@ -469,23 +502,72 @@ where
         &format!("failed to wait on launched process {pid}"),
         child.wait(),
     );
-    log_if_err("failed to restore window after launch", window.show());
+    if window.is_alive() {
+        log_if_err("failed to restore window after launch", window.show());
+    } else {
+        // The window was destroyed while the game ran — there is nothing to
+        // restore, and any call to `show()` would only land on the generic
+        // "failed to restore window after launch" line by accident. Log the
+        // situation deliberately so it's grep-able alongside the rest of the
+        // pixelcache: prefix (issue #9).
+        eprintln!("pixelcache: window closed during launch (pid {pid}); nothing to restore");
+    }
     on_exit();
 }
 
-/// The production exit-watcher: move the child + window onto a background OS
-/// thread that blocks on the child and restores the window when it exits.
+/// RAII guard for the single-launch slot. Holds the in-flight `AtomicBool`
+/// while a game is being watched; drops it when the guard is dropped. The
+/// three Tauri launch commands all `try_acquire` one before spawning and
+/// disarm it once the exit-watcher takes over, so the flag flips on
+/// exactly one boundary: acquire → watcher-spawned, watcher-spawned → exit.
 ///
-/// A plain OS thread (not `tauri::async_runtime::spawn`) because `Child::wait`
-/// blocks the whole thread; keeping it off the async runtime avoids parking a
-/// shared tokio worker for the entire game session. Injected into [`launch_with`]
-/// so tests can substitute a synchronous watcher instead.
-fn watch_on_thread<C, W>(child: C, window: W)
-where
-    C: WaitableChild + Send + 'static,
-    W: RestorableWindow + Send + 'static,
-{
-    std::thread::spawn(move || wait_and_restore(child, window));
+/// Issue #9 motivated this — without it, two overlapping `launch_test_game`
+/// (or any combination of the three launch entry points) would each detach
+/// their own background watcher, and whichever child exited first would
+/// re-show the window while the other child kept running invisibly.
+///
+/// [`disarm`](LaunchGuard::disarm) hands the responsibility for clearing the
+/// flag to the watcher thread, so a `LaunchGuard` that survives long enough
+/// to reach the watcher does not double-release.
+struct LaunchGuard {
+    flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl LaunchGuard {
+    /// Try to claim the single-launch slot. Returns `None` if another launch is
+    /// already in flight — the caller surfaces that as
+    /// [`LaunchError::AlreadyInFlight`] without touching the flag.
+    fn try_acquire(flag: Arc<std::sync::atomic::AtomicBool>) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        if flag
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            Some(LaunchGuard { flag: Some(flag) })
+        } else {
+            None
+        }
+    }
+
+    /// Transfer responsibility for clearing the flag to the watcher thread.
+    /// The guard must be disarmed exactly once — after this call, `Drop` does
+    /// not touch the flag.
+    fn disarm(mut self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.flag.take().expect("LaunchGuard::disarm called twice")
+    }
+}
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        // If `disarm` was never called, no watcher took over — release the
+        // flag so a future launch can proceed. This is the safety net for
+        // every path between `try_acquire` and `disarm`, including a panic in
+        // the spawning code or a spawn failure that never reached the watcher.
+        if let Some(flag) = self.flag.take() {
+            flag.store(false, Ordering::SeqCst);
+        }
+    }
 }
 
 /// Orchestrate a launch with the spawn-fail-safe hide/restore ordering.
@@ -527,10 +609,36 @@ where
 /// while the game runs full-screen. The typed [`LaunchError`] is stringified only
 /// here, at the IPC boundary.
 #[tauri::command]
-pub async fn launch_test_game(window: tauri::WebviewWindow) -> Result<LaunchResult, String> {
+pub async fn launch_test_game(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, LaunchInFlight>,
+) -> Result<LaunchResult, String> {
+    // Claim the single-launch slot before doing any work — a second concurrent
+    // request would otherwise detach its own background watcher, and whichever
+    // child exited first would re-show the window while the other child kept
+    // running invisibly (issue #9).
+    let guard = LaunchGuard::try_acquire(state.flag.clone())
+        .ok_or_else(|| LaunchError::AlreadyInFlight.to_string())?;
+
     let spec = resolve_from_env();
     let program = spec.program.clone();
-    launch_with(program, window, || spawn(&spec), watch_on_thread).map_err(|e| e.to_string())
+    launch_with(
+        program,
+        window,
+        || spawn(&spec),
+        move |child, win| {
+            // Hand the flag to the watcher thread — it clears it after the
+            // child exits and the window is restored. From here on, a spawn
+            // failure path lets `guard`'s Drop release the flag instead.
+            let flag = guard.disarm();
+            std::thread::spawn(move || {
+                wait_and_restore_then(child, win, move || {
+                    flag.store(false, Ordering::SeqCst);
+                });
+            });
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Tauri command invoked when the user clicks Play on a Release in the Game
@@ -550,9 +658,15 @@ pub async fn launch_test_game(window: tauri::WebviewWindow) -> Result<LaunchResu
 pub async fn launch_release(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    state: tauri::State<'_, LaunchInFlight>,
     release_id: String,
     deck_id: Option<String>,
 ) -> Result<LaunchResult, String> {
+    // Same single-launch guard as `launch_test_game` — see that command for
+    // the issue #9 rationale.
+    let guard = LaunchGuard::try_acquire(state.flag.clone())
+        .ok_or_else(|| LaunchError::AlreadyInFlight.to_string())?;
+
     let catalog = crate::catalog::load_bundled_catalog(&app)?;
     let vault_root = std::env::var(VAULT_DIR_ENV).ok();
     let spec = resolve_release_spec(
@@ -569,9 +683,14 @@ pub async fn launch_release(
         window,
         || spawn(&spec),
         move |child, win| {
+            // Disarm the guard so its Drop doesn't race the watcher; the flag
+            // is cleared in the `on_exit` hook alongside play-history recording
+            // so the ordering stays "restore window first, then bookkeeping".
+            let flag = guard.disarm();
             std::thread::spawn(move || {
                 wait_and_restore_then(child, win, move || {
                     crate::playhistory::record_session_end(&app, &release_id, started.elapsed());
+                    flag.store(false, Ordering::SeqCst);
                 });
             });
         },
@@ -589,11 +708,43 @@ pub async fn launch_release(
 #[tauri::command]
 pub async fn test_launch_deck(
     window: tauri::WebviewWindow,
+    state: tauri::State<'_, LaunchInFlight>,
     deck: Deck,
 ) -> Result<LaunchResult, String> {
+    // Same single-launch guard as the other two entry points — `test_launch_deck`
+    // shares the Tauri window and hide/restore machinery, so it would race a
+    // running game just as easily (issue #9).
+    let guard = LaunchGuard::try_acquire(state.flag.clone())
+        .ok_or_else(|| LaunchError::AlreadyInFlight.to_string())?;
+
     let spec = resolve_deck_test_spec(&deck).map_err(|e| e.to_string())?;
     let program = spec.program.clone();
-    launch_with(program, window, || spawn(&spec), watch_on_thread).map_err(|e| e.to_string())
+    launch_with(
+        program,
+        window,
+        || spawn(&spec),
+        move |child, win| {
+            let flag = guard.disarm();
+            std::thread::spawn(move || {
+                wait_and_restore_then(child, win, move || {
+                    flag.store(false, Ordering::SeqCst);
+                });
+            });
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Tauri-managed state holding the single-launch in-flight flag.
+///
+/// Registered with `.manage(LaunchInFlight::default())` in `lib.rs` and pulled
+/// out of every launch command as `tauri::State<'_, LaunchInFlight>`. The
+/// `Arc<AtomicBool>` is shared between commands and (eventually) the watcher
+/// thread that clears it on child exit; `#[derive(Default)]` lets the manager
+/// build it without arguments at startup.
+#[derive(Default)]
+pub struct LaunchInFlight {
+    pub flag: Arc<AtomicBool>,
 }
 
 #[cfg(test)]
@@ -1027,13 +1178,16 @@ mod tests {
     }
 
     /// A fake window that counts hide/show calls and can simulate a `hide`
-    /// failure. Counters are shared via `Arc` so assertions survive the window
-    /// being moved into the watcher.
+    /// failure or a mid-launch close. Counters are shared via `Arc` so assertions
+    /// survive the window being moved into the watcher. `alive` defaults to
+    /// `true` so existing tests keep working unchanged; the closed-mid-launch
+    /// test flips it via [`FakeWindow::close_mid_launch`].
     #[derive(Clone)]
     struct FakeWindow {
         hidden: Arc<AtomicUsize>,
         shown: Arc<AtomicUsize>,
         hide_fails: bool,
+        alive: Arc<AtomicBool>,
     }
 
     impl FakeWindow {
@@ -1042,7 +1196,14 @@ mod tests {
                 hidden: Arc::new(AtomicUsize::new(0)),
                 shown: Arc::new(AtomicUsize::new(0)),
                 hide_fails: false,
+                alive: Arc::new(AtomicBool::new(true)),
             }
+        }
+
+        /// Simulate the user closing the Tauri window mid-launch: from this
+        /// point on, [`RestorableWindow::is_alive`] returns false.
+        fn close_mid_launch(&self) {
+            self.alive.store(false, Ordering::SeqCst);
         }
     }
 
@@ -1059,6 +1220,10 @@ mod tests {
         fn show(&self) -> Result<(), String> {
             self.shown.fetch_add(1, Ordering::SeqCst);
             Ok(())
+        }
+
+        fn is_alive(&self) -> bool {
+            self.alive.load(Ordering::SeqCst)
         }
     }
 
@@ -1216,5 +1381,111 @@ mod tests {
 
         assert!(result.is_ok(), "hide failure should not fail the launch");
         assert_eq!(shown.load(Ordering::SeqCst), 1);
+    }
+
+    // --- Single-launch guard + mid-launch close (issue #9) ------------------
+    //
+    // The Execution Engine has three entry points (test game / release play /
+    // deck test launch) that all share the same Tauri window and hide/restore
+    // machinery. Without a guard, two overlapping launches race each other to
+    // re-show the window — whichever child exits first wins, and the later
+    // child is left unmanaged. The guard below owns a single in-flight slot and
+    // is the unit-testable seam every Tauri command goes through.
+
+    #[test]
+    fn launch_guard_acquires_when_flag_is_free() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let guard = LaunchGuard::try_acquire(flag.clone()).expect("flag was free");
+        // The guard must have flipped the flag to true; dropping it clears.
+        assert!(flag.load(Ordering::SeqCst));
+        drop(guard);
+        assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn launch_guard_rejects_a_second_acquire_while_in_flight() {
+        // First acquire succeeds; second one — from the same "concurrent
+        // caller" — must observe the flag and back off without flipping it
+        // back to false (a guard dropped mid-flight would unblock the next
+        // launch before the watched child exits).
+        let flag = Arc::new(AtomicBool::new(false));
+        let _first = LaunchGuard::try_acquire(flag.clone()).expect("first acquire");
+        let second = LaunchGuard::try_acquire(flag.clone());
+        assert!(second.is_none(), "second acquire should be rejected");
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "a rejected acquire must not clear the flag"
+        );
+    }
+
+    #[test]
+    fn launch_guard_allows_a_new_acquire_after_drop() {
+        // Once the watcher is done and its guard drops, a fresh launch must
+        // be allowed again — that's the whole point of releasing on Drop.
+        let flag = Arc::new(AtomicBool::new(false));
+        drop(LaunchGuard::try_acquire(flag.clone()).unwrap());
+        LaunchGuard::try_acquire(flag.clone()).expect("flag was free again");
+    }
+
+    #[test]
+    fn launch_guard_disarm_transfers_responsibility_to_the_caller() {
+        // The watcher thread takes ownership of clearing the flag (so it
+        // clears at exactly the right moment — after the child exits and the
+        // window is restored). `disarm` must prevent Drop from racing that
+        // and clearing the flag too early.
+        let flag = Arc::new(AtomicBool::new(false));
+        let guard = LaunchGuard::try_acquire(flag.clone()).unwrap();
+        let _transferred = guard.disarm();
+        // Drop runs now (disarmed) and must NOT clear the flag.
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "disarmed guard must not clear the flag on drop"
+        );
+    }
+
+    #[test]
+    fn wait_and_restore_then_skips_show_when_window_was_closed_mid_launch() {
+        // The user closed the Tauri window while the game was running. The
+        // exit-watcher must deliberately skip the restore path — not call
+        // `show()` on a destroyed window and trip the generic
+        // "failed to restore window after launch" log line by accident.
+        let child = FakeChild {
+            id: 123,
+            waited: Arc::new(AtomicBool::new(false)),
+            wait_fails: false,
+        };
+        let window = FakeWindow::new();
+        window.close_mid_launch();
+        let shown = window.shown.clone();
+
+        wait_and_restore_then(child, window, || {});
+
+        assert_eq!(
+            shown.load(Ordering::SeqCst),
+            0,
+            "show() must be skipped when the window was closed mid-launch"
+        );
+    }
+
+    #[test]
+    fn wait_and_restore_then_still_runs_on_exit_hook_when_window_was_closed_mid_launch() {
+        // Closing the window mid-launch must not silently swallow bookkeeping
+        // (e.g. play-history recording) — the hook is the same fire-and-forget
+        // shape it always was.
+        let child = FakeChild {
+            id: 124,
+            waited: Arc::new(AtomicBool::new(false)),
+            wait_fails: false,
+        };
+        let window = FakeWindow::new();
+        window.close_mid_launch();
+        let hook_ran = Arc::new(AtomicBool::new(false));
+        let probe = hook_ran.clone();
+
+        wait_and_restore_then(child, window, move || {
+            probe.store(true, Ordering::SeqCst);
+        });
+
+        assert!(hook_ran.load(Ordering::SeqCst));
     }
 }
