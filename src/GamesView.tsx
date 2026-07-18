@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Catalog, Game, Release } from "./catalog";
-import type { LaunchResult } from "./launch";
+import type { LaunchResult, LaunchStatus } from "./launch";
 import {
   gameCardInfos,
   peerReleases,
@@ -20,6 +20,7 @@ import {
 import GameDetailsPanel from "./GameDetailsPanel";
 import GameGrid from "./GameGrid";
 import GamesFilterBar from "./GamesFilterBar";
+import LaunchStatusLine from "./LaunchStatusLine";
 import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
 import { resolveMedia, stillSource } from "./media";
 import {
@@ -31,12 +32,6 @@ import {
 } from "./playHistory";
 import { useGridFocus } from "./useGridFocus";
 import { useMinuteTick } from "./useMinuteTick";
-
-type LaunchStatus =
-  | { kind: "idle" }
-  | { kind: "launching" }
-  | { kind: "launched"; result: LaunchResult }
-  | { kind: "error"; message: string };
 
 type ScanStatus =
   | { kind: "idle" }
@@ -308,15 +303,11 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
         </button>
       </div>
 
-      <p className="status" role="status" aria-live="polite">
-        {launchStatus.kind === "launched" &&
-          `Launched ${launchStatus.result.program} (pid ${launchStatus.result.pid})`}
-        {launchStatus.kind === "error" &&
-          `Launch failed: ${launchStatus.message}`}
+      <LaunchStatusLine status={launchStatus}>
         {scanStatus.kind === "scanned" &&
           `Scan complete: ${scanStatus.gameCount} game${scanStatus.gameCount === 1 ? "" : "s"} found`}
         {scanStatus.kind === "error" && `Scan failed: ${scanStatus.message}`}
-      </p>
+      </LaunchStatusLine>
 
       {selectedGame && (
         <GameDetailsPanel

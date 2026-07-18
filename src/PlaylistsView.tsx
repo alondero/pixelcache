@@ -1,17 +1,13 @@
 import { useState } from "react";
-import type { RefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Catalog } from "./catalog";
-import type { LaunchResult } from "./launch";
+import FocusGrid from "./FocusGrid";
+import type { LaunchResult, LaunchStatus } from "./launch";
+import LaunchStatusLine from "./LaunchStatusLine";
 import { playlistReleases } from "./playlistView";
-import { CARD_GAP_PX, CARD_MIN_WIDTH_PX, GRID_CSS_VARS } from "./gridLayout";
+import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
 import { useGridFocus } from "./useGridFocus";
-
-type LaunchStatus =
-  | { kind: "idle" }
-  | { kind: "launching"; releaseId: string }
-  | { kind: "launched"; result: LaunchResult }
-  | { kind: "error"; message: string };
+import { useTabListKeys } from "./useTabListKeys";
 
 interface PlaylistsViewProps {
   catalog: Catalog;
@@ -30,9 +26,9 @@ function PlaylistsView({ catalog }: PlaylistsViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(
     playlists[0]?.id ?? null,
   );
-  const [launchStatus, setLaunchStatus] = useState<LaunchStatus>({
-    kind: "idle",
-  });
+  const [launchStatus, setLaunchStatus] = useState<
+    LaunchStatus<{ releaseId: string }>
+  >({ kind: "idle" });
 
   const releases = selectedId ? playlistReleases(catalog, selectedId) : [];
   const { containerRef, focusedIndex, registerItemRef } = useGridFocus({
@@ -40,6 +36,15 @@ function PlaylistsView({ catalog }: PlaylistsViewProps) {
     itemWidth: CARD_MIN_WIDTH_PX,
     gap: CARD_GAP_PX,
   });
+
+  // Playlist chips are a WAI-ARIA tablist controlling the release grid below;
+  // arrow keys rove between them with selection following focus.
+  const selectedTabIndex = playlists.findIndex((p) => p.id === selectedId);
+  const { registerTabRef, onKeyDown } = useTabListKeys(
+    playlists.length,
+    selectedTabIndex,
+    (index) => setSelectedId(playlists[index].id),
+  );
 
   async function launchRelease(releaseId: string) {
     setLaunchStatus({ kind: "launching", releaseId });
@@ -63,65 +68,72 @@ function PlaylistsView({ catalog }: PlaylistsViewProps) {
 
   return (
     <div className="playlists-view">
-      <div className="playlist-tabs" role="tablist" aria-label="Playlists">
-        {playlists.map((playlist) => (
-          <button
-            key={playlist.id}
-            type="button"
-            role="tab"
-            aria-selected={playlist.id === selectedId}
-            className={`playlist-chip${playlist.id === selectedId ? " is-selected" : ""}`}
-            onClick={() => setSelectedId(playlist.id)}
-          >
-            {playlist.name}
-          </button>
-        ))}
+      <div
+        className="playlist-tabs"
+        role="tablist"
+        aria-label="Playlists"
+        onKeyDown={onKeyDown}
+      >
+        {playlists.map((playlist, index) => {
+          const isSelected = playlist.id === selectedId;
+          return (
+            <button
+              key={playlist.id}
+              type="button"
+              role="tab"
+              id={`playlist-tab-${playlist.id}`}
+              aria-controls={`playlist-panel-${playlist.id}`}
+              aria-selected={isSelected}
+              tabIndex={isSelected ? 0 : -1}
+              ref={registerTabRef(index)}
+              className={`playlist-chip${isSelected ? " is-selected" : ""}`}
+              onClick={() => setSelectedId(playlist.id)}
+            >
+              {playlist.name}
+            </button>
+          );
+        })}
       </div>
 
       <div
-        className="game-grid"
-        style={GRID_CSS_VARS}
-        ref={containerRef as RefObject<HTMLDivElement>}
-        role="grid"
-        aria-label="Playlist releases"
+        role="tabpanel"
+        id={`playlist-panel-${selectedId}`}
+        aria-labelledby={`playlist-tab-${selectedId}`}
       >
-        {releases.map((release, index) => (
-          <button
-            key={release.id}
-            type="button"
-            className={`game-card${focusedIndex === index ? " is-focused" : ""}`}
-            ref={registerItemRef(index)}
-            tabIndex={focusedIndex === index ? 0 : -1}
-            role="gridcell"
-            onClick={() => launchRelease(release.id)}
-            disabled={
-              launchStatus.kind === "launching" &&
-              launchStatus.releaseId === release.id
-            }
-          >
-            <span className="game-card-title">{release.title}</span>
-            <span className="game-card-meta">
-              {launchStatus.kind === "launching" &&
-              launchStatus.releaseId === release.id
-                ? "Launching…"
-                : `${release.platform} · Play`}
-            </span>
-          </button>
-        ))}
+        <FocusGrid containerRef={containerRef} label="Playlist releases">
+          {releases.map((release, index) => (
+            <button
+              key={release.id}
+              type="button"
+              className={`game-card${focusedIndex === index ? " is-focused" : ""}`}
+              ref={registerItemRef(index)}
+              tabIndex={focusedIndex === index ? 0 : -1}
+              role="gridcell"
+              onClick={() => launchRelease(release.id)}
+              disabled={
+                launchStatus.kind === "launching" &&
+                launchStatus.releaseId === release.id
+              }
+            >
+              <span className="game-card-title">{release.title}</span>
+              <span className="game-card-meta">
+                {launchStatus.kind === "launching" &&
+                launchStatus.releaseId === release.id
+                  ? "Launching…"
+                  : `${release.platform} · Play`}
+              </span>
+            </button>
+          ))}
+        </FocusGrid>
+
+        {releases.length === 0 && (
+          <p className="status" role="status">
+            This playlist has no releases yet.
+          </p>
+        )}
+
+        <LaunchStatusLine status={launchStatus} />
       </div>
-
-      {releases.length === 0 && (
-        <p className="status" role="status">
-          This playlist has no releases yet.
-        </p>
-      )}
-
-      <p className="status" role="status" aria-live="polite">
-        {launchStatus.kind === "launched" &&
-          `Launched ${launchStatus.result.program} (pid ${launchStatus.result.pid})`}
-        {launchStatus.kind === "error" &&
-          `Launch failed: ${launchStatus.message}`}
-      </p>
     </div>
   );
 }

@@ -862,3 +862,93 @@ describe("Play activity & favorites v2", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("ARIA tab pattern & grid structure", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    eventHandlers.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps only the active view tab in the page tab order (roving tabindex)", async () => {
+    mockInvoke();
+    render(<App />);
+    await screen.findByText("Star Fox 64");
+
+    expect(screen.getByRole("tab", { name: /games/i })).toHaveAttribute(
+      "tabindex",
+      "0",
+    );
+    expect(screen.getByRole("tab", { name: /^playlists$/i })).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+  });
+
+  it("associates each view tab with its panel via aria-controls / aria-labelledby", async () => {
+    mockInvoke();
+    render(<App />);
+    await screen.findByText("Star Fox 64");
+
+    expect(screen.getByRole("tab", { name: /games/i })).toHaveAttribute(
+      "aria-controls",
+      "view-panel-games",
+    );
+    // On the Games view there is exactly one tabpanel (views mount one at a
+    // time), labelled by the active tab.
+    const panel = screen.getByRole("tabpanel");
+    expect(panel).toHaveAttribute("id", "view-panel-games");
+    expect(panel).toHaveAttribute("aria-labelledby", "view-tab-games");
+  });
+
+  it("roves view tabs with arrow keys; selection follows focus and mounts the view", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    screen.getByRole("tab", { name: /games/i }).focus();
+    await user.keyboard("{ArrowRight}");
+
+    // Selection follows focus, so the Playlists tab is now selected and its
+    // view is mounted. (Focus then flows into the freshly-mounted grid — the
+    // app's gamepad-first "land on a card" behaviour — so we assert selection
+    // and the swapped content rather than tab focus.)
+    const playlistsTab = screen.getByRole("tab", { name: /^playlists$/i });
+    expect(playlistsTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Lylat Wars")).toBeInTheDocument();
+  });
+
+  it("wraps grid cells in a role=row so the grid > row > gridcell structure is valid", async () => {
+    mockInvoke();
+    render(<App />);
+    await screen.findByText("Star Fox 64");
+
+    const grid = screen.getByRole("grid", { name: /game catalog/i });
+    const row = within(grid).getByRole("row");
+    expect(within(row).getAllByRole("gridcell").length).toBeGreaterThan(0);
+  });
+
+  it("roves focus between playlist chips with arrow keys and swaps the release list", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Star Fox 64");
+    await user.click(screen.getByRole("tab", { name: /^playlists$/i }));
+
+    // Favourites (the default chip) is selected; roving right lands on N64 Only.
+    screen.getByRole("tab", { name: /favourites/i }).focus();
+    await user.keyboard("{ArrowRight}");
+
+    const n64 = screen.getByRole("tab", { name: /n64 only/i });
+    expect(n64).toHaveFocus();
+    expect(n64).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Star Fox 64")).toBeInTheDocument();
+    expect(screen.queryByText("Lylat Wars")).not.toBeInTheDocument();
+  });
+});
