@@ -43,6 +43,8 @@ interface GamesViewProps {
   catalog: Catalog;
   /** Called with a freshly scanned Catalog so the whole app (both tabs) refreshes. */
   onCatalogChange: (catalog: Catalog) => void;
+  /** Re-open the first-run setup wizard, offered when the library is empty. */
+  onOpenSetup?: () => void;
 }
 
 /**
@@ -69,7 +71,7 @@ function stampFavorite(
   };
 }
 
-function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
+function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus>({
     kind: "idle",
   });
@@ -147,12 +149,11 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
   const heroCount = hero ? 1 : 0;
 
   // The roving focus loop covers the hero (a leading full-width row), every
-  // *visible* Game card, and the two action buttons, so arrow keys/D-pad can
+  // *visible* Game card, and the Rescan action button, so arrow keys/D-pad can
   // always reach them regardless of how many cards the filter leaves. It is
   // suspended while the details panel is open — the panel runs its own focus
   // loop, and only one may listen to the gamepad at a time.
-  const launchButtonIndex = heroCount + cards.length;
-  const rescanButtonIndex = launchButtonIndex + 1;
+  const rescanButtonIndex = heroCount + cards.length;
   const { containerRef, focusedIndex, registerItemRef, focusItem } =
     useGridFocus({
       itemCount: rescanButtonIndex + 1,
@@ -161,16 +162,6 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
       enabled: selectedGame === null,
       leadingFullWidth: heroCount,
     });
-
-  async function launchTestGame() {
-    setLaunchStatus({ kind: "launching" });
-    try {
-      const result = await invoke<LaunchResult>("launch_test_game");
-      setLaunchStatus({ kind: "launched", result });
-    } catch (error) {
-      setLaunchStatus({ kind: "error", message: String(error) });
-    }
-  }
 
   // Rescan the Vault: the Rust `scan_vault` command regenerates catalog.json
   // and returns the fresh Catalog, which we hand back to `App` so state (and
@@ -270,27 +261,22 @@ function GamesView({ catalog, onCatalogChange }: GamesViewProps) {
       {cards.length === 0 && (
         <p className="status" role="status">
           {allCards.length === 0
-            ? "No games yet. Rescan a Vault to populate your library."
+            ? "No games yet. Set up your library, or rescan a Vault."
             : isFilterActive(filter)
               ? "No games match your search."
               : "No games to show."}
         </p>
       )}
 
-      <div className="actions">
-        <button
-          type="button"
-          className={`launch-button${focusedIndex === launchButtonIndex ? " is-focused" : ""}`}
-          onClick={launchTestGame}
-          disabled={launchStatus.kind === "launching"}
-          ref={registerItemRef(launchButtonIndex)}
-          tabIndex={focusedIndex === launchButtonIndex ? 0 : -1}
-        >
-          {launchStatus.kind === "launching"
-            ? "Launching…"
-            : "Launch Test Game"}
-        </button>
+      {allCards.length === 0 && onOpenSetup && (
+        <div className="actions">
+          <button type="button" className="launch-button" onClick={onOpenSetup}>
+            Open setup guide
+          </button>
+        </div>
+      )}
 
+      <div className="actions">
         <button
           type="button"
           className={`launch-button secondary${focusedIndex === rescanButtonIndex ? " is-focused" : ""}`}

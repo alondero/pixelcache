@@ -538,7 +538,7 @@ pub async fn scan_vault(
 
     // Load the current catalog so manual Releases, Decks, Playlists, and curated
     // Game metadata survive the rescan. A missing catalog is treated as empty.
-    let existing = crate::catalog::load_bundled_catalog(&app).unwrap_or_default();
+    let existing = crate::catalog::load_current_catalog(&app).unwrap_or_default();
 
     let to_scan = resolve_vaults(vaults, &existing).map_err(|e| e.to_string())?;
 
@@ -549,7 +549,16 @@ pub async fn scan_vault(
     let mut base = existing;
     upsert_vaults(&mut base.vaults, &to_scan);
 
-    let catalog = apply_scan(&base, &files, &scanned_ids);
+    let mut catalog = apply_scan(&base, &files, &scanned_ids);
+
+    // Fill missing covers from each Vault's companion media directory, matched
+    // by filename. Best-effort: art never fails a scan.
+    for vault in &to_scan {
+        if let Some(media_path) = vault.media_path.as_deref().filter(|p| !p.trim().is_empty()) {
+            let art = walk_media_dir(Path::new(media_path.trim()));
+            catalog = match_vault_media(catalog, &vault.id, &art);
+        }
+    }
 
     let out_path = app
         .path()
@@ -594,7 +603,110 @@ fn env_vault() -> Option<Vault> {
         platform,
         path,
         pattern: None,
+        media_path: None,
     })
+}
+
+/// A single image file discovered in a Vault's companion media directory
+/// ([`Vault::media_path`]): its filename stem, used for matching against ROM
+/// filenames and titles, and its path relative to the media root (with `/`
+/// separators, like [`RomFile::relative_path`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaFile {
+    pub stem: String,
+    pub relative_path: String,
+}
+
+/// Image extensions recognised when walking a media directory — the still
+/// formats the media protocol serves (see [`crate::media::mime_for`]).
+const MEDIA_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "avif"];
+
+/// Normalise a filename stem or title for art matching: lower-cased, with
+/// top-level `(...)` / `[...]` tag groups removed and whitespace collapsed, so
+/// `"Super Mario World (USA) [!]"` and `"super mario world"` compare equal.
+fn normalize_art_key(stem: &str) -> String {
+    let bare = title_prefix(stem);
+    // `title_prefix` already strips everything from the first tag on; lower-case
+    // and collapse interior runs of whitespace for a stable comparison key.
+    bare.to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Assign covers from a Vault's companion media directory to that Vault's
+/// Releases by filename match (pure).
+///
+/// For every Release owned by `vault_id` whose `image` slot is still unset, the
+/// art files are searched for a stem matching the Release's ROM filename or its
+/// parsed title (case-insensitively, ignoring region/dump tags — see
+/// [`normalize_art_key`]). Existing media assignments are never overwritten, so
+/// curated art and scraped art always win over a rescan.
+pub fn match_vault_media(mut catalog: Catalog, vault_id: &str, art: &[MediaFile]) -> Catalog {
+    for release in catalog
+        .releases
+        .iter_mut()
+        .filter(|r| r.vault_id.as_deref() == Some(vault_id))
+    {
+        if release.media.as_ref().is_some_and(|m| m.image.is_some()) {
+            continue;
+        }
+        let rom_stem = Path::new(&release.file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&release.file_path);
+        let rom_key = normalize_art_key(rom_stem);
+        let title_key = normalize_art_key(&release.title);
+
+        let hit = art.iter().find(|file| {
+            let key = normalize_art_key(&file.stem);
+            key == rom_key || key == title_key
+        });
+        if let Some(file) = hit {
+            let media = release.media.get_or_insert_with(Default::default);
+            media.image = Some(file.relative_path.clone());
+        }
+    }
+    catalog
+}
+
+/// Collect every image file under a media directory, recursively (IO).
+///
+/// Best-effort by design: art is decoration, so an unreadable or missing media
+/// directory yields an empty list rather than failing the scan that walks it.
+pub fn walk_media_dir(root: &Path) -> Vec<MediaFile> {
+    let mut found = Vec::new();
+    walk_media_into(root, root, &mut found);
+    found
+}
+
+fn walk_media_into(root: &Path, dir: &Path, found: &mut Vec<MediaFile>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_media_into(root, &path, found);
+            continue;
+        }
+        let is_image = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .is_some_and(|e| MEDIA_EXTENSIONS.contains(&e.as_str()));
+        if !is_image {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        found.push(MediaFile {
+            stem: stem.to_string(),
+            relative_path: to_portable(relative),
+        });
+    }
 }
 
 /// Insert or replace each incoming Vault into `vaults`, keyed by id, so a
@@ -948,6 +1060,7 @@ mod tests {
             platform: platform.to_string(),
             path: path.to_string(),
             pattern: pattern.map(|p| p.to_string()),
+            media_path: None,
         }
     }
 
@@ -1327,6 +1440,112 @@ mod tests {
 
         assert_eq!(roms.len(), 2);
         assert!(roms.iter().all(|r| r.platform == "ps1"));
+    }
+
+    // --- Media vault matching ----------------------------------------------
+
+    fn media_file(stem: &str, rel: &str) -> MediaFile {
+        MediaFile {
+            stem: stem.to_string(),
+            relative_path: rel.to_string(),
+        }
+    }
+
+    fn scanned_snes_catalog() -> Catalog {
+        build_catalog(&[RomFile {
+            relative_path: "Super Mario World (USA).sfc".to_string(),
+            platform: "snes".to_string(),
+            vault_id: "snes-vault".to_string(),
+            parsed: parse_filename("Super Mario World (USA)"),
+        }])
+    }
+
+    #[test]
+    fn match_vault_media_assigns_covers_by_rom_filename() {
+        let catalog = scanned_snes_catalog();
+        let art = vec![
+            media_file("Some Other Game (USA)", "Some Other Game (USA).png"),
+            media_file(
+                "Super Mario World (USA)",
+                "covers/Super Mario World (USA).png",
+            ),
+        ];
+
+        let matched = match_vault_media(catalog, "snes-vault", &art);
+
+        let release = &matched.releases[0];
+        assert_eq!(
+            release.media.as_ref().and_then(|m| m.image.as_deref()),
+            Some("covers/Super Mario World (USA).png")
+        );
+    }
+
+    #[test]
+    fn match_vault_media_matches_titles_ignoring_region_tags_and_case() {
+        let catalog = scanned_snes_catalog();
+        // The art collection names files by bare title, differently cased, with
+        // no region tag — the common layout for hand-curated cover folders.
+        let art = vec![media_file("super mario world", "super mario world.jpg")];
+
+        let matched = match_vault_media(catalog, "snes-vault", &art);
+
+        assert_eq!(
+            matched.releases[0]
+                .media
+                .as_ref()
+                .and_then(|m| m.image.as_deref()),
+            Some("super mario world.jpg")
+        );
+    }
+
+    #[test]
+    fn match_vault_media_never_overwrites_existing_art_and_skips_other_vaults() {
+        let mut catalog = scanned_snes_catalog();
+        catalog.releases[0].media = Some(crate::catalog::Media {
+            image: Some("already/set.png".to_string()),
+            ..Default::default()
+        });
+        let art = vec![media_file("Super Mario World (USA)", "new.png")];
+
+        let matched = match_vault_media(catalog.clone(), "snes-vault", &art);
+        assert_eq!(
+            matched.releases[0]
+                .media
+                .as_ref()
+                .and_then(|m| m.image.as_deref()),
+            Some("already/set.png"),
+            "existing curation wins over a filename match"
+        );
+
+        catalog.releases[0].media = None;
+        let other = match_vault_media(catalog, "nes-vault", &art);
+        assert!(
+            other.releases[0].media.is_none(),
+            "a match only applies to the scanned vault's own releases"
+        );
+    }
+
+    #[test]
+    fn walk_media_dir_collects_images_recursively_and_tolerates_a_missing_dir() {
+        let dir = temp_dir("media");
+        std::fs::write(dir.join("Super Mario World (USA).png"), b"img").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"not an image").unwrap();
+        let sub = dir.join("covers");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("Chrono Trigger.webp"), b"img").unwrap();
+
+        let mut found = walk_media_dir(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+
+        found.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        assert_eq!(found.len(), 2, "only image files are collected");
+        assert_eq!(found[0].stem, "Super Mario World (USA)");
+        assert_eq!(found[1].relative_path, "covers/Chrono Trigger.webp");
+
+        assert!(
+            walk_media_dir(Path::new("definitely-not-a-real-media-dir")).is_empty(),
+            "a missing media dir yields no art, never an error — art is decoration"
+        );
     }
 
     #[test]

@@ -1146,3 +1146,156 @@
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.55);
 }
+
+/* --- First-run onboarding wizard ---------------------------------------- */
+
+.onboarding {
+  width: 100%;
+  max-width: 720px;
+  text-align: left;
+}
+
+/* The progress rail: a row of step labels joined by hairlines, the current
+   one glowing. */
+.onboarding-rail {
+  display: flex;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0 0 1.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-rail-step {
+  position: relative;
+  padding: 0.3rem 0.9rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition:
+    color 0.2s ease,
+    background 0.2s ease;
+}
+
+.onboarding-rail-step.is-done {
+  color: rgba(139, 233, 175, 0.8);
+}
+
+.onboarding-rail-step.is-current {
+  color: #fff;
+  background: rgba(88, 101, 242, 0.25);
+  border-color: rgba(88, 101, 242, 0.45);
+  box-shadow: 0 0 18px rgba(88, 101, 242, 0.35);
+}
+
+/* Each step slides up as it appears (the step key remounts the container). */
+.onboarding-step {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: onboarding-step-in 0.28s ease;
+}
+
+@keyframes onboarding-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.onboarding-title {
+  margin: 0;
+  font-size: 1.6rem;
+  line-height: 1.25;
+  background: linear-gradient(120deg, #fff, rgba(160, 170, 255, 0.85));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.onboarding-lead {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.65);
+  line-height: 1.55;
+}
+
+.onboarding-perks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.onboarding-perks li {
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.5;
+}
+
+.onboarding-perks strong {
+  color: #fff;
+}
+
+.onboarding-vault {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.onboarding-folder {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.onboarding-folder .search-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.onboarding-browse {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.onboarding-remove {
+  margin-top: 0.6rem;
+}
+
+.onboarding-decks .deck-row {
+  align-items: flex-start;
+}
+
+.onboarding-decks .deck-field {
+  width: 100%;
+}
+
+/* `.search-input`'s `flex: 1 1 12rem` is tuned for the horizontal filter bar;
+   inside the deck row's *column* layout it would grow vertically into a pill
+   balloon, so pin it back to its natural height here. */
+.onboarding-decks .deck-field .search-input {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.onboarding-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}

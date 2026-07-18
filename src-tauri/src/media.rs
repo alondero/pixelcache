@@ -54,24 +54,24 @@ pub fn resolved_slot(catalog: &Catalog, release_id: &str, slot: &str) -> Option<
 }
 
 /// The ordered filesystem locations to try for a media `rel_path`, most specific
-/// first: the [`MEDIA_DIR_ENV`] override, then the owning Release's Vault root,
-/// then the bundled resource `media/` directory (where the demo catalog's
-/// artwork lives). Blank roots are skipped. Pure — [`first_existing`] picks the
-/// first that is actually a file.
+/// first: the [`MEDIA_DIR_ENV`] override, then the owning Vault's companion
+/// media root ([`crate::catalog::Vault::media_path`]), then the Vault root
+/// itself (where the artwork scraper writes). Blank roots are skipped. Pure —
+/// [`first_existing`] picks the first that is actually a file.
 pub fn media_candidates(
     media_env: Option<&str>,
+    vault_media_path: Option<&str>,
     vault_path: Option<&str>,
-    resource_media_dir: Option<&Path>,
     rel_path: &str,
 ) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    for root in [media_env, vault_path].into_iter().flatten() {
+    for root in [media_env, vault_media_path, vault_path]
+        .into_iter()
+        .flatten()
+    {
         if !root.trim().is_empty() {
             candidates.push(Path::new(root.trim()).join(rel_path));
         }
-    }
-    if let Some(dir) = resource_media_dir {
-        candidates.push(dir.join(rel_path));
     }
     candidates
 }
@@ -140,7 +140,7 @@ fn decode_component(component: &str) -> String {
 }
 
 /// The `pixelcache-media://` protocol handler: resolve the requested Release +
-/// slot to a file (Vault first, bundled resources last) and return its bytes, or
+/// slot to a file (media dir first, Vault root last) and return its bytes, or
 /// a 404 when the request is malformed or the file is missing. Registered on the
 /// Tauri builder in `lib.rs`.
 ///
@@ -165,27 +165,27 @@ pub fn respond(
         return not_found();
     };
 
-    let Ok(catalog) = crate::catalog::load_bundled_catalog(app) else {
+    let Ok(catalog) = crate::catalog::load_current_catalog(app) else {
         return not_found();
     };
     let Some(rel_path) = resolved_slot(&catalog, &release_id, &slot) else {
         return not_found();
     };
 
-    let vault_path = catalog
+    let vault = catalog
         .releases
         .iter()
         .find(|r| r.id == release_id)
         .and_then(|r| r.vault_id.as_deref())
-        .and_then(|id| catalog.vaults.iter().find(|v| v.id == id))
-        .map(|v| v.path.clone());
+        .and_then(|id| catalog.vaults.iter().find(|v| v.id == id));
+    let vault_path = vault.map(|v| v.path.clone());
+    let vault_media_path = vault.and_then(|v| v.media_path.clone());
     let media_env = std::env::var(MEDIA_DIR_ENV).ok();
-    let resource_media_dir = resource_media_dir(app);
 
     let candidates = media_candidates(
         media_env.as_deref(),
+        vault_media_path.as_deref(),
         vault_path.as_deref(),
-        resource_media_dir.as_deref(),
         &rel_path,
     );
 
@@ -201,14 +201,6 @@ pub fn respond(
         .header(CONTENT_TYPE, mime_for(&file))
         .body(Cow::Owned(bytes))
         .unwrap_or_else(|_| not_found())
-}
-
-/// The bundled resource `media/` directory, where the demo catalog's artwork is
-/// shipped so a fresh install has previews before any Vault is configured.
-fn resource_media_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    use tauri::path::BaseDirectory;
-    use tauri::Manager;
-    app.path().resolve("media", BaseDirectory::Resource).ok()
 }
 
 #[cfg(test)]
@@ -283,27 +275,26 @@ mod tests {
     }
 
     #[test]
-    fn media_candidates_are_ordered_env_then_vault_then_resource() {
-        let resource = PathBuf::from("/app/resources/media");
+    fn media_candidates_are_ordered_env_then_media_vault_then_vault() {
         let candidates = media_candidates(
             Some("/env/media"),
+            Some("/mnt/art/n64"),
             Some("/mnt/roms/n64"),
-            Some(&resource),
             "star-fox-64/cover.webp",
         );
         assert_eq!(
             candidates,
             vec![
                 PathBuf::from("/env/media/star-fox-64/cover.webp"),
+                PathBuf::from("/mnt/art/n64/star-fox-64/cover.webp"),
                 PathBuf::from("/mnt/roms/n64/star-fox-64/cover.webp"),
-                PathBuf::from("/app/resources/media/star-fox-64/cover.webp"),
             ]
         );
     }
 
     #[test]
     fn media_candidates_skip_absent_and_blank_roots() {
-        let candidates = media_candidates(None, Some("   "), None, "cover.webp");
+        let candidates = media_candidates(None, None, Some("   "), "cover.webp");
         assert!(candidates.is_empty());
     }
 
