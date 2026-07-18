@@ -234,6 +234,13 @@ pub struct Vault {
     /// optional). When absent, the platform's default extension set applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
+    /// Optional companion media root for this Vault — a folder of box art /
+    /// previews kept separately from the games themselves. The media protocol
+    /// resolves a Release's media paths against this root before the Vault
+    /// `path` itself, and the Import Scanner auto-assigns covers from it by
+    /// filename match (see `crate::scanner::match_vault_media`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_path: Option<String>,
 }
 
 /// The centralized master directory of all [`Game`], [`Release`], [`Deck`],
@@ -323,20 +330,19 @@ pub fn load_catalog_from_path(path: &Path) -> Result<Catalog, CatalogError> {
     })
 }
 
-/// Filename of the catalog document, used both for the bundled mock (resolved
-/// against the app's resource directory per the `bundle.resources` mapping in
-/// `tauri.conf.json`) and for the generated copy the Import Scanner writes to
-/// the app data directory.
+/// Filename of the catalog document the Import Scanner and the settings
+/// commands write to the app data directory.
 pub const CATALOG_FILE_NAME: &str = "catalog.json";
 
-/// Load the catalog, preferring a scanner-generated copy in the app data
-/// directory (issue #4) and falling back to the bundled mock resource when no
-/// generated catalog exists yet — e.g. on a fresh install before the first
-/// Vault scan. Shared by the `load_catalog` command and the launch engine
-/// (which re-reads the catalog to resolve a Release into a Deck command), so
-/// both see the same catalog the user is actually viewing.
-pub fn load_bundled_catalog(app: &tauri::AppHandle) -> Result<Catalog, String> {
-    use tauri::path::BaseDirectory;
+/// Load the catalog from the app data directory. When none exists yet — a
+/// fresh install before the first Vault scan — the catalog is simply *empty*,
+/// which is what the frontend keys its onboarding flow off. (The pre-onboarding
+/// builds shipped a bundled demo catalog here instead; nothing in it could
+/// actually launch, so the demo was replaced by guided setup.) Shared by the
+/// `load_catalog` command and the launch engine (which re-reads the catalog to
+/// resolve a Release into a Deck command), so both see the same catalog the
+/// user is actually viewing.
+pub fn load_current_catalog(app: &tauri::AppHandle) -> Result<Catalog, String> {
     use tauri::Manager;
 
     if let Ok(generated) = app.path().app_data_dir() {
@@ -345,18 +351,13 @@ pub fn load_bundled_catalog(app: &tauri::AppHandle) -> Result<Catalog, String> {
             return load_catalog_from_path(&generated).map_err(|e| e.to_string());
         }
     }
-
-    let path = app
-        .path()
-        .resolve(CATALOG_FILE_NAME, BaseDirectory::Resource)
-        .map_err(|e| format!("failed to resolve catalog resource path: {e}"))?;
-    load_catalog_from_path(&path).map_err(|e| e.to_string())
+    Ok(Catalog::default())
 }
 
 /// Tauri command invoked once on frontend startup to load the Catalog.
 #[tauri::command]
 pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
-    load_bundled_catalog(&app)
+    load_current_catalog(&app)
 }
 
 /// Atomically write a serialized JSON payload to `path`: create parent
@@ -426,7 +427,7 @@ pub(crate) fn persist_catalog(app: &tauri::AppHandle, catalog: &Catalog) -> Resu
 /// is preserved — only the Deck set changes.
 #[tauri::command]
 pub async fn save_decks(app: tauri::AppHandle, decks: Vec<Deck>) -> Result<Catalog, String> {
-    let mut catalog = load_bundled_catalog(&app)?;
+    let mut catalog = load_current_catalog(&app)?;
     catalog.decks = decks;
     persist_catalog(&app, &catalog)?;
     Ok(catalog)
@@ -452,7 +453,7 @@ pub async fn set_favorite(
     game_id: String,
     favorite: bool,
 ) -> Result<Catalog, String> {
-    let catalog = load_bundled_catalog(&app)?;
+    let catalog = load_current_catalog(&app)?;
     let updated = apply_favorite(catalog, &game_id, favorite);
     persist_catalog(&app, &updated)?;
     Ok(updated)
@@ -494,7 +495,7 @@ pub async fn save_media(
     game_id: Option<String>,
     game_media: Option<Media>,
 ) -> Result<Catalog, String> {
-    let catalog = load_bundled_catalog(&app)?;
+    let catalog = load_current_catalog(&app)?;
     let updated = apply_media(
         catalog,
         release_id.map(|id| (id, release_media)),
@@ -977,6 +978,24 @@ mod tests {
         std::fs::remove_file(&path).ok();
 
         assert!(matches!(result, Err(CatalogError::Parse { .. })));
+    }
+
+    #[test]
+    fn vault_media_path_round_trips_and_is_omitted_when_absent() {
+        let with = Catalog::from_json(
+            r#"{"vaults": [{"id": "v", "platform": "snes", "path": "/roms", "mediaPath": "/art"}]}"#,
+        )
+        .expect("mediaPath parses");
+        assert_eq!(with.vaults[0].media_path.as_deref(), Some("/art"));
+        assert!(serde_json::to_string(&with).unwrap().contains("mediaPath"));
+
+        let without =
+            Catalog::from_json(r#"{"vaults": [{"id": "v", "platform": "snes", "path": "/roms"}]}"#)
+                .expect("pre-mediaPath vaults still parse");
+        assert!(without.vaults[0].media_path.is_none());
+        assert!(!serde_json::to_string(&without)
+            .unwrap()
+            .contains("mediaPath"));
     }
 
     #[test]

@@ -667,7 +667,7 @@ pub async fn launch_release(
     let guard = LaunchGuard::try_acquire(state.flag.clone())
         .ok_or_else(|| LaunchError::AlreadyInFlight.to_string())?;
 
-    let catalog = crate::catalog::load_bundled_catalog(&app)?;
+    let catalog = crate::catalog::load_current_catalog(&app)?;
     let vault_root = std::env::var(VAULT_DIR_ENV).ok();
     let spec = resolve_release_spec(
         &catalog,

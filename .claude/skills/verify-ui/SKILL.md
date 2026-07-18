@@ -139,6 +139,13 @@ UI verified:
   separate click-then-screenshot is too slow. Use
   `playwright-cli run-code "async (page) => { ...click(); await page.waitForTimeout(500); await page.screenshot({ path: '...' }); }"`
   — the argument must be an async arrow taking `page`.
+- 2026-07-18 — `.search-input` carries `flex: 1 1 12rem` (tuned for the
+  horizontal filter bar). Reused inside a *column* flex container it grows
+  vertically into a giant pill balloon — override `flex: 0 0 auto` in the new
+  context. Only visible in a rendered browser; jsdom tests pass regardless.
+- 2026-07-18 — Step transitions in the onboarding wizard animate for 0.28s;
+  screenshot immediately after a `waitFor` and you capture a half-faded
+  frame. `waitForTimeout(600)` before the screenshot.
 - 2026-07-17 — Pre-existing console errors in the browser mock: the nested
   favorite-badge `<button>` hydration warning (GameGrid), a
   `plugin:event|listen` "no browser mock" error (GamesView), and

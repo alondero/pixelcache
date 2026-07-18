@@ -388,7 +388,7 @@ pub async fn scrape_release_artwork(
     app: tauri::AppHandle,
     release_id: String,
 ) -> Result<ScrapeOutcome, String> {
-    let catalog = crate::catalog::load_bundled_catalog(&app)?;
+    let catalog = crate::catalog::load_current_catalog(&app)?;
     let (status, found) =
         scrape_release(&catalog, &release_id, &HttpFetcher).map_err(|e| e.to_string())?;
     let slots: Vec<String> = found

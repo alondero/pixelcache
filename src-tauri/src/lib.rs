@@ -9,12 +9,14 @@ mod scrape;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Native folder/file pickers for the onboarding wizard and settings.
+        .plugin(tauri_plugin_dialog::init())
         // Single-launch in-flight flag shared by every launch entry point
         // (`launch_test_game`, `launch_release`, `test_launch_deck`) — see
         // `launch::LaunchInFlight` and issue #9.
         .manage(launch::LaunchInFlight::default())
-        // Serve Release/Game artwork from the Vault (falling back to bundled
-        // resources) over a custom asset protocol — see `media::respond`.
+        // Serve Release/Game artwork from the Vault (or its companion media
+        // directory) over a custom asset protocol — see `media::respond`.
         .register_uri_scheme_protocol(media::MEDIA_SCHEME, |ctx, request| {
             media::respond(ctx.app_handle(), &request)
         })

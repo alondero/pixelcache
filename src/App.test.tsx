@@ -196,65 +196,64 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the Launch button once the catalog has loaded", async () => {
+  it("shows the setup wizard on a fresh install (empty catalog)", async () => {
+    mockInvoke({
+      catalog: () =>
+        Promise.resolve({ games: [], releases: [], decks: [], playlists: [] }),
+    });
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: /welcome to pixelcache/i }),
+    ).toBeInTheDocument();
+    // The tabbed library is hidden while setup is in progress.
+    expect(screen.queryByRole("tablist", { name: /views/i })).toBeNull();
+  });
+
+  it("does not show the setup wizard for an established library", async () => {
     mockInvoke();
     render(<App />);
+
+    await screen.findByText("Star Fox 64");
     expect(
-      await screen.findByRole("button", { name: /launch test game/i }),
+      screen.queryByRole("heading", { name: /welcome to pixelcache/i }),
+    ).toBeNull();
+  });
+
+  it("skipping setup lands on the empty library, which can re-open the guide", async () => {
+    mockInvoke({
+      catalog: () =>
+        Promise.resolve({ games: [], releases: [], decks: [], playlists: [] }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /skip for now/i }),
+    );
+
+    // The empty library offers a way back into setup.
+    expect(screen.getByRole("tablist", { name: /views/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /open setup guide/i }));
+    expect(
+      screen.getByRole("heading", { name: /welcome to pixelcache/i }),
     ).toBeInTheDocument();
   });
 
-  it("invokes the launch_test_game command when the Launch button is clicked", async () => {
-    mockInvoke();
-    render(<App />);
-
-    await userEvent.click(
-      await screen.findByRole("button", { name: /launch test game/i }),
-    );
-
-    expect(invoke).toHaveBeenCalledWith("launch_test_game");
-  });
-
-  it("shows the launched process details on success", async () => {
-    mockInvoke();
-    render(<App />);
-
-    await userEvent.click(
-      await screen.findByRole("button", { name: /launch test game/i }),
-    );
-
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      /launched notepad\.exe \(pid 4242\)/i,
-    );
-  });
-
-  it("surfaces an error message when the launch fails", async () => {
-    mockInvoke({ launch: () => Promise.reject("emulator not found") });
-    render(<App />);
-
-    await userEvent.click(
-      await screen.findByRole("button", { name: /launch test game/i }),
-    );
-
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      /launch failed: emulator not found/i,
-    );
-  });
-
-  it("keeps the Launch button reachable via arrow-key navigation from the last game card", async () => {
+  it("keeps the Rescan button reachable via arrow-key navigation from the last game card", async () => {
     mockInvoke();
     const user = userEvent.setup();
     render(<App />);
 
     await screen.findByText("Star Fox 64");
-    const launchButton = screen.getByRole("button", {
-      name: /launch test game/i,
+    const rescanButton = screen.getByRole("button", {
+      name: /rescan vault/i,
     });
 
-    // Card 0 -> card 1 -> Launch button (index 2), the item after the last
+    // Card 0 -> card 1 -> Rescan button (index 2), the item after the last
     // game card in the roving focus loop.
     await user.keyboard("{ArrowRight}{ArrowRight}");
-    expect(launchButton).toHaveFocus();
+    expect(rescanButton).toHaveFocus();
   });
 
   it("renders the Rescan Vault button", async () => {
@@ -447,7 +446,7 @@ describe("App", () => {
     expect(screen.queryByText("Star Fox 64")).not.toBeInTheDocument();
   });
 
-  it("keeps the Launch button reachable by arrow keys after filtering shrinks the grid", async () => {
+  it("keeps the Rescan button reachable by arrow keys after filtering shrinks the grid", async () => {
     mockInvoke();
     const user = userEvent.setup();
     render(<App />);
@@ -458,13 +457,11 @@ describe("App", () => {
       "metroid",
     );
 
-    // Only one card remains; ArrowRight from it lands on the Launch button.
+    // Only one card remains; ArrowRight from it lands on the Rescan button.
     const card = screen.getByText("Metroid").closest("button")!;
     card.focus();
     await user.keyboard("{ArrowRight}");
-    expect(
-      screen.getByRole("button", { name: /launch test game/i }),
-    ).toHaveFocus();
+    expect(screen.getByRole("button", { name: /rescan vault/i })).toHaveFocus();
   });
 
   it("renders a Playlists tab and switches to it when selected", async () => {

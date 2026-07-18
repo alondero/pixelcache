@@ -118,6 +118,13 @@ export interface Vault {
    * list of extensions. When absent, the platform's default extensions apply.
    */
   pattern?: string;
+  /**
+   * Optional companion media root for this Vault — a folder of box art /
+   * previews kept separately from the games. The media protocol resolves media
+   * paths against it before the Vault `path`, and the Import Scanner
+   * auto-assigns covers from it by filename match.
+   */
+  mediaPath?: string;
 }
 
 /**
