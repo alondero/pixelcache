@@ -1,7 +1,7 @@
 import type { MouseEvent, RefObject } from "react";
 import type { Game } from "./catalog";
 import type { GameCardInfo } from "./catalogView";
-import { GRID_CSS_VARS } from "./gridLayout";
+import FocusGrid from "./FocusGrid";
 import { mediaSrc } from "./media";
 import { formatLastPlayed, type PlayEntry } from "./playHistory";
 
@@ -48,13 +48,7 @@ function GameGrid({
   now,
 }: GameGridProps) {
   return (
-    <div
-      className="game-grid"
-      style={GRID_CSS_VARS}
-      ref={containerRef as RefObject<HTMLDivElement>}
-      role="grid"
-      aria-label="Game catalog"
-    >
+    <FocusGrid containerRef={containerRef} label="Game catalog">
       {cards.map((card, cardIndex) => {
         const index = cardIndex + indexOffset;
         const played = playByGame?.get(card.game.id);
@@ -115,7 +109,7 @@ function GameGrid({
           </button>
         );
       })}
-    </div>
+    </FocusGrid>
   );
 }
 

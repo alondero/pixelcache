@@ -5,6 +5,7 @@ import GamesView from "./GamesView";
 import PlaylistsView from "./PlaylistsView";
 import DecksView from "./DecksView";
 import MediaView from "./MediaView";
+import { useTabListKeys } from "./useTabListKeys";
 import "./App.css";
 
 type CatalogStatus =
@@ -27,6 +28,15 @@ function App() {
     kind: "loading",
   });
   const [activeTab, setActiveTab] = useState<Tab>("games");
+
+  // The top-level view switcher is a WAI-ARIA tablist: arrow keys rove between
+  // the tabs with selection following focus.
+  const selectedTabIndex = TABS.findIndex((tab) => tab.id === activeTab);
+  const { registerTabRef, onKeyDown } = useTabListKeys(
+    TABS.length,
+    selectedTabIndex,
+    (index) => setActiveTab(TABS[index].id),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -52,47 +62,65 @@ function App() {
         <h1 className="title">Pixelcache</h1>
         <p className="subtitle">Lightweight cross-platform game launcher</p>
 
-        <nav className="view-tabs" role="tablist" aria-label="Views">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab.id}
-              className={`view-tab${activeTab === tab.id ? " is-active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <nav
+          className="view-tabs"
+          role="tablist"
+          aria-label="Views"
+          onKeyDown={onKeyDown}
+        >
+          {TABS.map((tab, index) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                id={`view-tab-${tab.id}`}
+                aria-controls={`view-panel-${tab.id}`}
+                aria-selected={isActive}
+                tabIndex={isActive ? 0 : -1}
+                ref={registerTabRef(index)}
+                className={`view-tab${isActive ? " is-active" : ""}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
         </nav>
 
-        {catalog && activeTab === "games" && (
-          <GamesView
-            catalog={catalog}
-            onCatalogChange={(next) =>
-              setCatalogStatus({ kind: "loaded", catalog: next })
-            }
-          />
-        )}
-        {catalog && activeTab === "playlists" && (
-          <PlaylistsView catalog={catalog} />
-        )}
-        {catalog && activeTab === "media" && (
-          <MediaView
-            catalog={catalog}
-            onCatalogChange={(next) =>
-              setCatalogStatus({ kind: "loaded", catalog: next })
-            }
-          />
-        )}
-        {catalog && activeTab === "settings" && (
-          <DecksView
-            catalog={catalog}
-            onCatalogChange={(next) =>
-              setCatalogStatus({ kind: "loaded", catalog: next })
-            }
-          />
+        {catalog && (
+          <div
+            role="tabpanel"
+            id={`view-panel-${activeTab}`}
+            aria-labelledby={`view-tab-${activeTab}`}
+          >
+            {activeTab === "games" && (
+              <GamesView
+                catalog={catalog}
+                onCatalogChange={(next) =>
+                  setCatalogStatus({ kind: "loaded", catalog: next })
+                }
+              />
+            )}
+            {activeTab === "playlists" && <PlaylistsView catalog={catalog} />}
+            {activeTab === "media" && (
+              <MediaView
+                catalog={catalog}
+                onCatalogChange={(next) =>
+                  setCatalogStatus({ kind: "loaded", catalog: next })
+                }
+              />
+            )}
+            {activeTab === "settings" && (
+              <DecksView
+                catalog={catalog}
+                onCatalogChange={(next) =>
+                  setCatalogStatus({ kind: "loaded", catalog: next })
+                }
+              />
+            )}
+          </div>
         )}
         {catalogStatus.kind === "error" && (
           <p className="status" role="alert">
