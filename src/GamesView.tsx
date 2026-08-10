@@ -20,6 +20,7 @@ import {
 import GameDetailsPanel from "./GameDetailsPanel";
 import GameGrid from "./GameGrid";
 import GamesFilterBar from "./GamesFilterBar";
+import FilterDrawer from "./FilterDrawer";
 import LaunchStatusLine from "./LaunchStatusLine";
 import { CARD_GAP_PX, CARD_MIN_WIDTH_PX } from "./gridLayout";
 import { resolveMedia, stillSource } from "./media";
@@ -45,6 +46,8 @@ interface GamesViewProps {
   onCatalogChange: (catalog: Catalog) => void;
   /** Re-open the first-run setup wizard, offered when the library is empty. */
   onOpenSetup?: () => void;
+  /** Suspends the library focus scope while the Start menu owns focus. */
+  controllerEnabled?: boolean;
 }
 
 /**
@@ -71,12 +74,18 @@ function stampFavorite(
   };
 }
 
-function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
+function GamesView({
+  catalog,
+  onCatalogChange,
+  onOpenSetup,
+  controllerEnabled = true,
+}: GamesViewProps) {
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus>({
     kind: "idle",
   });
   const [scanStatus, setScanStatus] = useState<ScanStatus>({ kind: "idle" });
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const [filterDrawer, setFilterDrawer] = useState(false);
   const [filter, setFilter] = useState<FilterState>(DEFAULT_FILTER);
   const [history, setHistory] = useState<PlayHistory>({});
   // One re-render per minute while the window is in the foreground so the
@@ -153,14 +162,34 @@ function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
   // always reach them regardless of how many cards the filter leaves. It is
   // suspended while the details panel is open — the panel runs its own focus
   // loop, and only one may listen to the gamepad at a time.
-  const rescanButtonIndex = heroCount + cards.length;
+  const toolbarCount = 1;
+  const contentOffset = toolbarCount + heroCount;
+  const rescanButtonIndex = contentOffset + cards.length;
   const { containerRef, focusedIndex, registerItemRef, focusItem } =
     useGridFocus({
       itemCount: rescanButtonIndex + 1,
       itemWidth: CARD_MIN_WIDTH_PX,
       gap: CARD_GAP_PX,
-      enabled: selectedGame === null,
-      leadingFullWidth: heroCount,
+      enabled: selectedGame === null && controllerEnabled && !filterDrawer,
+      initialIndex: contentOffset,
+      leadingFullWidth: contentOffset,
+      onSecondary: (index) => {
+        const release =
+          index === toolbarCount && hero
+            ? hero.release
+            : cards[index - contentOffset]
+              ? catalog.releases.find(
+                  (candidate) =>
+                    candidate.id ===
+                    cards[index - contentOffset].game.primaryReleaseId,
+                )
+              : undefined;
+        if (release) void launchRelease(release);
+      },
+      onFavorite: (index) => {
+        const card = cards[index - contentOffset];
+        if (card) void toggleFavorite(card.game);
+      },
     });
 
   // Rescan the Vault: the Rust `scan_vault` command regenerates catalog.json
@@ -230,6 +259,10 @@ function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
         releaseTypes={releaseTypes}
         resultCount={cards.length}
         totalCount={allCards.length}
+        filterButtonFocused={focusedIndex === 0}
+        filterButtonRef={registerItemRef(0)}
+        onFilterButtonFocus={() => focusItem(0)}
+        onOpenFilters={() => setFilterDrawer(true)}
       />
 
       {hero && (
@@ -237,9 +270,9 @@ function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
           release={hero.release}
           entry={hero.entry}
           coverSlot={heroCover?.slot}
-          isFocused={focusedIndex === 0}
-          registerRef={registerItemRef(0)}
-          onFocus={() => focusItem(0)}
+          isFocused={focusedIndex === toolbarCount}
+          registerRef={registerItemRef(toolbarCount)}
+          onFocus={() => focusItem(toolbarCount)}
           onResume={launchRelease}
           now={nowMs}
         />
@@ -253,7 +286,7 @@ function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
         focusItem={focusItem}
         onSelectGame={setSelectedGameId}
         onToggleFavorite={(game) => toggleFavorite(game)}
-        indexOffset={heroCount}
+        indexOffset={contentOffset}
         playByGame={playByGame}
         now={nowMs}
       />
@@ -284,6 +317,7 @@ function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
           disabled={scanStatus.kind === "scanning"}
           ref={registerItemRef(rescanButtonIndex)}
           tabIndex={focusedIndex === rescanButtonIndex ? 0 : -1}
+          onFocus={() => focusItem(rescanButtonIndex)}
         >
           {scanStatus.kind === "scanning" ? "Scanning…" : "Rescan Vault"}
         </button>
@@ -294,6 +328,16 @@ function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
           `Scan complete: ${scanStatus.gameCount} game${scanStatus.gameCount === 1 ? "" : "s"} found`}
         {scanStatus.kind === "error" && `Scan failed: ${scanStatus.message}`}
       </LaunchStatusLine>
+
+      {filterDrawer && (
+        <FilterDrawer
+          filter={filter}
+          onChange={setFilter}
+          platforms={platforms}
+          releaseTypes={releaseTypes}
+          onClose={() => setFilterDrawer(false)}
+        />
+      )}
 
       {selectedGame && (
         <GameDetailsPanel
@@ -306,6 +350,7 @@ function GamesView({ catalog, onCatalogChange, onOpenSetup }: GamesViewProps) {
           onToggleFavorite={() => toggleFavorite(selectedGame, false)}
           onLaunch={launchRelease}
           onClose={() => setSelectedGameId(null)}
+          controllerEnabled={controllerEnabled}
           now={nowMs}
         />
       )}

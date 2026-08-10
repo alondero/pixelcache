@@ -64,8 +64,8 @@ function GameGrid({
             onFocus={() => focusItem(index)}
           >
             {onToggleFavorite && (
-              <button
-                type="button"
+              <span
+                role="button"
                 className={`game-card-favorite${card.game.favorite ? " is-favorite" : ""}`}
                 aria-label={
                   card.game.favorite
@@ -84,7 +84,7 @@ function GameGrid({
                 tabIndex={-1}
               >
                 {card.game.favorite ? "♥" : "♡"}
-              </button>
+              </span>
             )}
             {card.cover ? (
               <img

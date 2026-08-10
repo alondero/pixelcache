@@ -1,11 +1,18 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Catalog } from "./catalog";
+import {
+  ControllerProvider,
+  useController,
+  useControllerActions,
+} from "./ControllerProvider";
+import type { ControllerAction } from "./controller";
 import GamesView from "./GamesView";
 import PlaylistsView from "./PlaylistsView";
 import DecksView from "./DecksView";
 import MediaView from "./MediaView";
 import OnboardingWizard from "./OnboardingWizard";
+import QuickMenu from "./QuickMenu";
 import { isFirstRun } from "./onboarding";
 import { useTabListKeys } from "./useTabListKeys";
 import "./App.css";
@@ -25,7 +32,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
-function App() {
+function AppContent() {
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>({
     kind: "loading",
   });
@@ -35,15 +42,58 @@ function App() {
   // and then held as state, so the wizard doesn't unmount mid-flow the moment
   // a scan makes the catalog non-empty. Re-openable from the empty library.
   const [onboarding, setOnboarding] = useState(false);
+  const [quickMenu, setQuickMenu] = useState(false);
+  const { playMode, controllerConnected } = useController();
 
   // The top-level view switcher is a WAI-ARIA tablist: arrow keys rove between
   // the tabs with selection following focus.
   const selectedTabIndex = TABS.findIndex((tab) => tab.id === activeTab);
-  const { registerTabRef, onKeyDown } = useTabListKeys(
+  const { registerTabRef, onKeyDown, moveTab } = useTabListKeys(
     TABS.length,
     selectedTabIndex,
     (index) => setActiveTab(TABS[index].id),
   );
+
+  // LB/RB (or PageUp/PageDown) switch the player-facing sections globally.
+  // Confirm also activates a focused top-level tab; grid scopes handle confirm
+  // themselves when focus is inside their own registered items.
+  const handleControllerAction = useCallback(
+    (action: ControllerAction) => {
+      if (action === "previousSection" || action === "nextSection") {
+        setActiveTab((current) => {
+          const index = TABS.findIndex((tab) => tab.id === current);
+          const delta = action === "previousSection" ? -1 : 1;
+          return TABS[(index + delta + TABS.length) % TABS.length].id;
+        });
+        return true;
+      }
+      if (
+        (action === "left" || action === "right") &&
+        document.activeElement?.id.startsWith("view-tab-")
+      ) {
+        moveTab(action === "left" ? "previous" : "next");
+        return true;
+      }
+      if (
+        action === "confirm" &&
+        document.activeElement?.getAttribute("role") === "tab"
+      ) {
+        (document.activeElement as HTMLElement).click();
+        return true;
+      }
+      if (action === "menu") {
+        setQuickMenu(true);
+        return true;
+      }
+      return false;
+    },
+    [moveTab],
+  );
+
+  useControllerActions({
+    enabled: !onboarding && !quickMenu,
+    onAction: handleControllerAction,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -66,7 +116,7 @@ function App() {
     catalogStatus.kind === "loaded" ? catalogStatus.catalog : null;
 
   return (
-    <main className="app">
+    <main className={`app${playMode ? " play-mode" : ""}`}>
       <div className="glass-card">
         <h1 className="title">Pixelcache</h1>
         <p className="subtitle">Lightweight cross-platform game launcher</p>
@@ -111,6 +161,19 @@ function App() {
           </nav>
         )}
 
+        {!onboarding && (
+          <div className="controller-hints" aria-label="Controller shortcuts">
+            <span>
+              {controllerConnected
+                ? "Controller connected"
+                : "Controller ready"}
+            </span>
+            <span>
+              A Select · B Back · X Quick launch · Y Favorite · Start Menu
+            </span>
+          </div>
+        )}
+
         {catalog && !onboarding && (
           <div
             role="tabpanel"
@@ -124,9 +187,12 @@ function App() {
                   setCatalogStatus({ kind: "loaded", catalog: next })
                 }
                 onOpenSetup={() => setOnboarding(true)}
+                controllerEnabled={!quickMenu}
               />
             )}
-            {activeTab === "playlists" && <PlaylistsView catalog={catalog} />}
+            {activeTab === "playlists" && (
+              <PlaylistsView catalog={catalog} controllerEnabled={!quickMenu} />
+            )}
             {activeTab === "media" && (
               <MediaView
                 catalog={catalog}
@@ -145,6 +211,19 @@ function App() {
             )}
           </div>
         )}
+        {quickMenu && (
+          <QuickMenu
+            onClose={() => setQuickMenu(false)}
+            onOpenSetup={() => {
+              setQuickMenu(false);
+              setOnboarding(true);
+            }}
+            onOpenSettings={() => {
+              setQuickMenu(false);
+              setActiveTab("settings");
+            }}
+          />
+        )}
         {catalogStatus.kind === "error" && (
           <p className="status" role="alert">
             Failed to load catalog: {catalogStatus.message}
@@ -152,6 +231,14 @@ function App() {
         )}
       </div>
     </main>
+  );
+}
+
+function App() {
+  return (
+    <ControllerProvider>
+      <AppContent />
+    </ControllerProvider>
   );
 }
 

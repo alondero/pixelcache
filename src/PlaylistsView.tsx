@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Catalog } from "./catalog";
+import { useControllerActions } from "./ControllerProvider";
 import FocusGrid from "./FocusGrid";
 import type { LaunchResult, LaunchStatus } from "./launch";
 import LaunchStatusLine from "./LaunchStatusLine";
@@ -11,6 +12,7 @@ import { useTabListKeys } from "./useTabListKeys";
 
 interface PlaylistsViewProps {
   catalog: Catalog;
+  controllerEnabled?: boolean;
 }
 
 /**
@@ -21,7 +23,10 @@ interface PlaylistsViewProps {
  * Owns its own `useGridFocus` over the Release cards; because `App` mounts only
  * one view at a time, this focus loop never competes with the Games view's.
  */
-function PlaylistsView({ catalog }: PlaylistsViewProps) {
+function PlaylistsView({
+  catalog,
+  controllerEnabled = true,
+}: PlaylistsViewProps) {
   const playlists = catalog.playlists;
   const [selectedId, setSelectedId] = useState<string | null>(
     playlists[0]?.id ?? null,
@@ -31,20 +36,53 @@ function PlaylistsView({ catalog }: PlaylistsViewProps) {
   >({ kind: "idle" });
 
   const releases = selectedId ? playlistReleases(catalog, selectedId) : [];
-  const { containerRef, focusedIndex, registerItemRef } = useGridFocus({
-    itemCount: releases.length,
-    itemWidth: CARD_MIN_WIDTH_PX,
-    gap: CARD_GAP_PX,
-  });
+  const { containerRef, focusedIndex, registerItemRef, focusItem } =
+    useGridFocus({
+      itemCount: releases.length,
+      itemWidth: CARD_MIN_WIDTH_PX,
+      gap: CARD_GAP_PX,
+      enabled: controllerEnabled,
+      onBack: () => {
+        document.getElementById(`playlist-tab-${selectedId}`)?.focus();
+      },
+    });
+
+  useEffect(() => {
+    if (
+      !selectedId ||
+      !document.activeElement?.id.startsWith("playlist-tab-")
+    ) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => focusItem(0));
+    return () => cancelAnimationFrame(frame);
+  }, [focusItem, releases.length, selectedId]);
 
   // Playlist chips are a WAI-ARIA tablist controlling the release grid below;
   // arrow keys rove between them with selection following focus.
   const selectedTabIndex = playlists.findIndex((p) => p.id === selectedId);
-  const { registerTabRef, onKeyDown } = useTabListKeys(
+  const { registerTabRef, onKeyDown, moveTab } = useTabListKeys(
     playlists.length,
     selectedTabIndex,
     (index) => setSelectedId(playlists[index].id),
   );
+
+  useControllerActions({
+    enabled: controllerEnabled,
+    onAction: (action) => {
+      const activeTab = document.activeElement?.id.startsWith("playlist-tab-");
+      if (!activeTab) return false;
+      if (action === "left" || action === "right") {
+        moveTab(action === "left" ? "previous" : "next");
+        return true;
+      }
+      if (action === "confirm") {
+        (document.activeElement as HTMLElement).click();
+        return true;
+      }
+      return false;
+    },
+  });
 
   async function launchRelease(releaseId: string) {
     setLaunchStatus({ kind: "launching", releaseId });
@@ -108,6 +146,7 @@ function PlaylistsView({ catalog }: PlaylistsViewProps) {
               className={`game-card${focusedIndex === index ? " is-focused" : ""}`}
               ref={registerItemRef(index)}
               tabIndex={focusedIndex === index ? 0 : -1}
+              onFocus={() => focusItem(index)}
               role="gridcell"
               onClick={() => launchRelease(release.id)}
               disabled={

@@ -1,5 +1,6 @@
 import type { ReleaseType } from "./catalog";
 import { ANY, type FilterState, type SortKey } from "./gamesFilter";
+import { releaseTypeLabel, SORT_OPTIONS } from "./gamesFilterLabels";
 
 interface GamesFilterBarProps {
   filter: FilterState;
@@ -12,22 +13,13 @@ interface GamesFilterBarProps {
   resultCount: number;
   /** How many Game cards exist in total (unfiltered). */
   totalCount: number;
+  filterButtonFocused?: boolean;
+  filterButtonRef?: (element: HTMLElement | null) => void;
+  onFilterButtonFocus?: () => void;
+  onOpenFilters?: () => void;
 }
 
 /** Human-readable labels for each sort order. */
-const SORT_OPTIONS: { value: SortKey; label: string }[] = [
-  { value: "title-asc", label: "Title A–Z" },
-  { value: "title-desc", label: "Title Z–A" },
-  { value: "releases-desc", label: "Most releases" },
-  { value: "last-played", label: "Recently played" },
-  { value: "most-played", label: "Most played" },
-];
-
-/** Title-case a release type for display ("retail" → "Retail"). */
-function releaseTypeLabel(type: ReleaseType): string {
-  return type.charAt(0).toUpperCase() + type.slice(1);
-}
-
 /**
  * The Games screen toolbar: a live search box plus platform, release-type, and
  * sort controls. Purely presentational — it holds no state, emitting a whole new
@@ -45,6 +37,10 @@ function GamesFilterBar({
   releaseTypes,
   resultCount,
   totalCount,
+  filterButtonFocused = false,
+  filterButtonRef,
+  onFilterButtonFocus,
+  onOpenFilters,
 }: GamesFilterBarProps) {
   return (
     <div className="games-toolbar">
@@ -122,6 +118,20 @@ function GamesFilterBar({
       >
         {filter.favoritesOnly ? "♥" : "♡"} Favorites
       </button>
+
+      {onOpenFilters && (
+        <button
+          type="button"
+          className={`filter-drawer-trigger${filterButtonFocused ? " is-focused" : ""}`}
+          aria-label="Open controller filters"
+          ref={filterButtonRef}
+          tabIndex={filterButtonFocused ? 0 : -1}
+          onFocus={onFilterButtonFocus}
+          onClick={onOpenFilters}
+        >
+          Filter menu
+        </button>
+      )}
 
       <span className="results-count" aria-live="polite">
         {resultCount === totalCount
