@@ -2,6 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import GameDetailsPanel from "./GameDetailsPanel";
+import { ControllerProvider } from "./ControllerProvider";
 import type { Release } from "./catalog";
 
 const releases: Release[] = [
@@ -43,14 +44,16 @@ function renderPanel({
   onClose?: () => void;
 } = {}) {
   render(
-    <GameDetailsPanel
-      title="Star Fox 64"
-      developer="Nintendo EAD"
-      releases={releases}
-      onLaunch={onLaunch}
-      onClose={onClose}
-      now={Date.now()}
-    />,
+    <ControllerProvider>
+      <GameDetailsPanel
+        title="Star Fox 64"
+        developer="Nintendo EAD"
+        releases={releases}
+        onLaunch={onLaunch}
+        onClose={onClose}
+        now={Date.now()}
+      />
+    </ControllerProvider>,
   );
   return { onLaunch, onClose };
 }
@@ -111,14 +114,16 @@ describe("GameDetailsPanel", () => {
   it("uses game-level media when the highlighted release has none", async () => {
     const user = userEvent.setup();
     render(
-      <GameDetailsPanel
-        title="Star Fox 64"
-        releases={releases}
-        gameMedia={{ boxart: "star-fox-64/box.png" }}
-        onLaunch={vi.fn()}
-        onClose={vi.fn()}
-        now={Date.now()}
-      />,
+      <ControllerProvider>
+        <GameDetailsPanel
+          title="Star Fox 64"
+          releases={releases}
+          gameMedia={{ boxart: "star-fox-64/box.png" }}
+          onLaunch={vi.fn()}
+          onClose={vi.fn()}
+          now={Date.now()}
+        />
+      </ControllerProvider>,
     );
 
     // The hack release sets no media of its own, so it inherits the game's boxart.

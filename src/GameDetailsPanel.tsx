@@ -24,6 +24,8 @@ interface GameDetailsPanelProps {
   onToggleFavorite?: () => void;
   onLaunch: (release: Release) => void;
   onClose: () => void;
+  /** Whether this modal owns controller focus while a quick menu is open. */
+  controllerEnabled?: boolean;
   /** Wall-clock time for the per-release "last X ago" caption. */
   now: number;
 }
@@ -54,6 +56,7 @@ function GameDetailsPanel({
   onToggleFavorite,
   onLaunch,
   onClose,
+  controllerEnabled = true,
   now,
 }: GameDetailsPanelProps) {
   // Which release drives the preview pane. Focus (keyboard/gamepad) and hover
@@ -71,10 +74,18 @@ function GameDetailsPanel({
   // would leave D-pad focus stranded on nothing.
   const favoriteIndex = onToggleFavorite ? releases.length : -1;
   const closeIndex = releases.length + (onToggleFavorite ? 1 : 0);
-  const { containerRef, focusedIndex, registerItemRef } = useGridFocus({
-    itemCount: closeIndex + 1,
-    itemWidth: SINGLE_COLUMN_ITEM_WIDTH,
-  });
+  const { containerRef, focusedIndex, registerItemRef, focusItem } =
+    useGridFocus({
+      itemCount: closeIndex + 1,
+      itemWidth: SINGLE_COLUMN_ITEM_WIDTH,
+      enabled: controllerEnabled,
+      onBack: onClose,
+      onSecondary: () => {
+        const primary = releases[0];
+        if (primary) onLaunch(primary);
+      },
+      onFavorite: onToggleFavorite ? () => onToggleFavorite() : undefined,
+    });
 
   const highlighted = releases[highlightedIndex];
   // Resolve the highlighted release's artwork against the game-level fallback,
@@ -110,9 +121,6 @@ function GameDetailsPanel({
         role="dialog"
         aria-label={title}
         ref={containerRef as React.RefObject<HTMLDivElement>}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") onClose();
-        }}
       >
         <header className="details-header">
           <div>
@@ -133,6 +141,7 @@ function GameDetailsPanel({
                 onClick={onToggleFavorite}
                 ref={registerItemRef(favoriteIndex)}
                 tabIndex={focusedIndex === favoriteIndex ? 0 : -1}
+                onFocus={() => focusItem(favoriteIndex)}
               >
                 {favorite ? "♥" : "♡"}
               </button>
@@ -144,6 +153,7 @@ function GameDetailsPanel({
               onClick={onClose}
               ref={registerItemRef(closeIndex)}
               tabIndex={focusedIndex === closeIndex ? 0 : -1}
+              onFocus={() => focusItem(closeIndex)}
             >
               ✕
             </button>
@@ -190,7 +200,10 @@ function GameDetailsPanel({
                 ref={registerItemRef(index)}
                 tabIndex={focusedIndex === index ? 0 : -1}
                 onClick={() => onLaunch(release)}
-                onFocus={() => setHighlightedIndex(index)}
+                onFocus={() => {
+                  setHighlightedIndex(index);
+                  focusItem(index);
+                }}
                 onMouseEnter={() => setHighlightedIndex(index)}
               >
                 <span className="release-row-play" aria-hidden="true">

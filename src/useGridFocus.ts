@@ -1,39 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  computeColumns,
-  moveFocusIndex,
-  type Direction,
-} from "./gridNavigation";
-
-const ARROW_KEY_DIRECTIONS: Record<string, Direction> = {
-  ArrowUp: "up",
-  ArrowDown: "down",
-  ArrowLeft: "left",
-  ArrowRight: "right",
-};
-
-/** Standard Gamepad mapping D-pad button indices (up, down, left, right). */
-const DPAD_BUTTON_DIRECTIONS: Direction[] = ["up", "down", "left", "right"];
-const DPAD_BUTTON_START_INDEX = 12;
-const STICK_AXIS_THRESHOLD = 0.5;
-/** Minimum time between repeated gamepad moves, so a held stick/button doesn't race. */
-const GAMEPAD_REPEAT_DELAY_MS = 200;
-
-/** Read the first direction a gamepad's D-pad or left stick is currently pushing. */
-export function readGamepadDirection(pad: Gamepad): Direction | null {
-  for (let i = 0; i < DPAD_BUTTON_DIRECTIONS.length; i++) {
-    if (pad.buttons[DPAD_BUTTON_START_INDEX + i]?.pressed) {
-      return DPAD_BUTTON_DIRECTIONS[i];
-    }
-  }
-
-  const [x, y] = pad.axes;
-  if (y !== undefined && y < -STICK_AXIS_THRESHOLD) return "up";
-  if (y !== undefined && y > STICK_AXIS_THRESHOLD) return "down";
-  if (x !== undefined && x < -STICK_AXIS_THRESHOLD) return "left";
-  if (x !== undefined && x > STICK_AXIS_THRESHOLD) return "right";
-  return null;
-}
+  useControllerActions,
+  type ControllerHandler,
+} from "./ControllerProvider";
+import { computeColumns, moveFocusIndex } from "./gridNavigation";
+import type { Direction } from "./controller";
 
 interface UseGridFocusOptions {
   /** Total number of focusable items in the grid. */
@@ -42,19 +13,18 @@ interface UseGridFocusOptions {
   itemWidth?: number;
   /** Gap between cards, matching the CSS grid's `gap`. */
   gap?: number;
-  /**
-   * While `false`, the hook ignores all keyboard/gamepad input and never calls
-   * `.focus()`. Needed when two instances coexist (e.g. the game grid behind
-   * an open details panel): unlike the keyboard handler, the gamepad poll has
-   * no `document.activeElement` to consult, so without this flag both
-   * instances would react to the same D-pad press and fight over focus.
-   */
+  /** Whether this focus scope owns semantic controller/keyboard input. */
   enabled?: boolean;
-  /**
-   * How many of the first items are full-width rows stacked above the grid
-   * (e.g. the "Continue Playing" hero). See `moveFocusIndex`'s `leading`.
-   */
+  /** How many of the first items are full-width rows stacked above the grid. */
   leadingFullWidth?: number;
+  /** Initial focus index, useful when a toolbar item precedes the content grid. */
+  initialIndex?: number;
+  /** Called when the active scope receives B/Escape. */
+  onBack?: () => void;
+  /** Called when the active scope receives X. */
+  onSecondary?: (index: number) => void;
+  /** Called when the active scope receives Y. */
+  onFavorite?: (index: number) => void;
 }
 
 interface UseGridFocusResult {
@@ -64,20 +34,17 @@ interface UseGridFocusResult {
   focusedIndex: number;
   /** Attach to each item at `index` to register it as a focus target. */
   registerItemRef: (index: number) => (el: HTMLElement | null) => void;
-  /**
-   * Sync the roving focus to `index` when focus arrives by other means (e.g.
-   * a mouse click on an item), so subsequent arrow/D-pad moves — and focus
-   * restoration after an overlay closes — continue from that item.
-   */
+  /** Sync roving focus when focus arrives by mouse or another scope. */
   focusItem: (index: number) => void;
 }
 
 /**
- * Roving-focus keyboard + gamepad navigation for a responsive CSS grid.
+ * Roving-focus navigation for responsive grids.
  *
- * Delegates all position math to the pure functions in `gridNavigation.ts` —
- * this hook is just the glue that measures the container, listens for arrow
- * keys and D-pad/stick input, and calls `.focus()` on the resulting item.
+ * All raw keyboard and Gamepad input is translated by ControllerProvider. This
+ * hook owns only one focus scope: directional movement, activation, B/Escape,
+ * and the optional X/Y actions are handled when one of its registered items is
+ * focused. That ownership rule prevents two mounted scopes from fighting.
  */
 export function useGridFocus({
   itemCount,
@@ -85,14 +52,22 @@ export function useGridFocus({
   gap = 16,
   enabled = true,
   leadingFullWidth = 0,
+  initialIndex = 0,
+  onBack,
+  onSecondary,
+  onFavorite,
 }: UseGridFocusOptions): UseGridFocusResult {
   const containerRef = useRef<HTMLElement | null>(null);
   const itemRefs = useRef<Array<HTMLElement | null>>([]);
-  const [focusedIndex, setFocusedIndex] = useState(0);
+  const focusedIndexRef = useRef(0);
+  const [focusedIndex, setFocusedIndex] = useState(initialIndex);
   const [columns, setColumns] = useState(1);
+
+  focusedIndexRef.current = focusedIndex;
 
   useEffect(() => {
     setFocusedIndex((current) => Math.min(current, Math.max(itemCount - 1, 0)));
+    itemRefs.current.length = itemCount;
   }, [itemCount]);
 
   useEffect(() => {
@@ -120,54 +95,52 @@ export function useGridFocus({
         ),
       );
     },
-    [itemCount, columns, leadingFullWidth],
+    [columns, itemCount, leadingFullWidth],
   );
 
-  useEffect(() => {
-    if (!enabled) return;
-    function onKeyDown(event: KeyboardEvent) {
-      const direction = ARROW_KEY_DIRECTIONS[event.key];
-      if (!direction) return;
-      // Only steal arrow keys while one of *our* items is focused, so this
-      // hook can't hijack navigation for an unrelated focusable element
-      // (e.g. a future search box) elsewhere on the page.
-      if (!itemRefs.current.includes(document.activeElement as HTMLElement)) {
-        return;
+  const activeScope = useCallback(
+    () => itemRefs.current.includes(document.activeElement as HTMLElement),
+    [],
+  );
+
+  const onAction = useCallback<ControllerHandler>(
+    (action) => {
+      if (!activeScope()) return false;
+
+      if (
+        action === "up" ||
+        action === "down" ||
+        action === "left" ||
+        action === "right"
+      ) {
+        move(action);
+        return true;
       }
-      event.preventDefault();
-      move(direction);
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [move, enabled]);
 
-  useEffect(() => {
-    if (!enabled) return;
-    if (typeof navigator.getGamepads !== "function") return;
-
-    let frameId: number;
-    let lastMoveAt = 0;
-
-    function poll(time: number) {
-      const pads = navigator.getGamepads();
-      for (const pad of pads) {
-        if (!pad) continue;
-        const direction = readGamepadDirection(pad);
-        if (direction && time - lastMoveAt > GAMEPAD_REPEAT_DELAY_MS) {
-          move(direction);
-          lastMoveAt = time;
-          break;
-        }
+      const index = focusedIndexRef.current;
+      if (action === "confirm") {
+        itemRefs.current[index]?.click();
+        return itemRefs.current[index] !== null;
       }
-      frameId = requestAnimationFrame(poll);
-    }
+      if (action === "back" && onBack) {
+        onBack();
+        return true;
+      }
+      if (action === "secondary" && onSecondary) {
+        onSecondary(index);
+        return true;
+      }
+      if (action === "favorite" && onFavorite) {
+        onFavorite(index);
+        return true;
+      }
+      return false;
+    },
+    [activeScope, move, onBack, onFavorite, onSecondary],
+  );
 
-    frameId = requestAnimationFrame(poll);
-    return () => cancelAnimationFrame(frameId);
-  }, [move, enabled]);
+  useControllerActions({ enabled, onAction });
 
-  // `enabled` is a dependency so that re-enabling (details panel closing)
-  // restores focus to the grid item the user was on before it opened.
   useEffect(() => {
     if (!enabled) return;
     itemRefs.current[focusedIndex]?.focus();

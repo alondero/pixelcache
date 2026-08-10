@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { RefObject } from "react";
 import { useGridFocus } from "./useGridFocus";
+import { ControllerProvider } from "./ControllerProvider";
 
 /** Minimal harness rendering N focusable buttons wired to the hook. */
-function Harness({
+function GridHarness({
   itemCount,
   enabled = true,
 }: {
@@ -30,6 +31,14 @@ function Harness({
         </button>
       ))}
     </div>
+  );
+}
+
+function Harness(props: { itemCount: number; enabled?: boolean }) {
+  return (
+    <ControllerProvider>
+      <GridHarness {...props} />
+    </ControllerProvider>
   );
 }
 

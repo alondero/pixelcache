@@ -164,10 +164,12 @@ function mockInvoke({
 describe("App", () => {
   beforeEach(() => {
     invoke.mockReset();
+    window.localStorage.clear();
   });
 
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
     vi.restoreAllMocks();
   });
 
@@ -383,6 +385,84 @@ describe("App", () => {
     );
   });
 
+  it("completes the controller play journey with confirm and back", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    const firstCard = await screen.findByText("Metroid");
+    expect(firstCard.closest("button")).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("dialog", { name: /metroid/i }),
+    ).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(firstCard.closest("button")).toHaveFocus());
+  });
+
+  it("quick-launches the focused Game with X and favorites it with Y", async () => {
+    const setFavorite = vi.fn((gameId: string, favorite: boolean) =>
+      Promise.resolve({
+        ...sampleCatalog,
+        games: sampleCatalog.games.map((game) =>
+          game.id === gameId ? { ...game, favorite } : game,
+        ),
+      }),
+    );
+    mockInvoke({ setFavorite });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Metroid");
+    await user.keyboard("x");
+    expect(invoke).toHaveBeenCalledWith("launch_release", {
+      releaseId: "metroid-ntsc",
+    });
+
+    await user.keyboard("y");
+    await waitFor(() =>
+      expect(setFavorite).toHaveBeenCalledWith("metroid", true),
+    );
+  });
+
+  it("opens the Start quick menu and restores the library focus on close", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    const firstCard = await screen.findByText("Metroid");
+    await user.keyboard("{F1}");
+
+    const menu = await screen.findByRole("dialog", { name: /quick menu/i });
+    expect(menu).toBeInTheDocument();
+    expect(
+      within(menu).getByRole("button", { name: /exit play mode/i }),
+    ).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: /quick menu/i }),
+    ).not.toBeInTheDocument();
+    await waitFor(() => expect(firstCard.closest("button")).toHaveFocus());
+  });
+
+  it("switches player-facing sections with PageDown", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Metroid");
+    await user.keyboard("{PageDown}");
+
+    expect(screen.getByRole("tab", { name: /playlists/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
   it("filters the grid live as the user types in the search box", async () => {
     mockInvoke();
     const user = userEvent.setup();
@@ -398,6 +478,32 @@ describe("App", () => {
 
     expect(screen.getByText("Metroid")).toBeInTheDocument();
     expect(screen.queryByText("Star Fox 64")).not.toBeInTheDocument();
+  });
+
+  it("opens the controller filter drawer from the library focus shell", async () => {
+    mockInvoke();
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("Metroid");
+    await user.keyboard("{ArrowUp}{Enter}");
+
+    const drawer = await screen.findByRole("dialog", {
+      name: /controller filters/i,
+    });
+    expect(
+      within(drawer).getByRole("button", { name: /all platforms/i }),
+    ).toHaveFocus();
+
+    // The first platform option after "All platforms" is n64 in this catalog.
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(screen.getByText("Star Fox 64")).toBeInTheDocument();
+    expect(screen.queryByText("Metroid")).not.toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: /controller filters/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("matches a game through a differently-titled peer release", async () => {

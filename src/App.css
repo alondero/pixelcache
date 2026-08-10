@@ -34,6 +34,48 @@
   text-align: center;
 }
 
+/* Player-facing presentation: bigger targets and more breathing room for a
+ * television or Steam Deck distance. The same DOM remains available in
+ * management mode, so Play Mode is a layout preference rather than a second
+ * application. */
+.play-mode {
+  padding: clamp(1rem, 4vw, 3rem);
+}
+
+.play-mode .glass-card {
+  width: min(100%, 1180px);
+  padding: clamp(2rem, 5vw, 4rem);
+}
+
+.play-mode .game-card {
+  min-height: 11rem;
+  padding: 1.2rem 1.25rem;
+}
+
+.play-mode .game-card-title {
+  font-size: 1.1rem;
+}
+
+.play-mode .continue-hero {
+  min-height: 7rem;
+  padding: 1.2rem 1.5rem;
+}
+
+.controller-hints {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.35rem 1rem;
+  width: 100%;
+  margin: -0.2rem 0 0.35rem;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.48);
+}
+
+.controller-hints span:first-child {
+  color: rgba(169, 180, 255, 0.82);
+}
+
 .view-tabs {
   display: flex;
   gap: 0.5rem;
@@ -221,6 +263,26 @@
   color: #ff7d9c;
   border-color: rgba(255, 125, 156, 0.45);
   background: rgba(255, 125, 156, 0.12);
+}
+
+.filter-drawer-trigger {
+  padding: 0.5rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  border: 1px solid rgba(169, 180, 255, 0.3);
+  border-radius: 999px;
+  background: rgba(88, 101, 242, 0.12);
+}
+
+.filter-drawer-trigger:hover,
+.filter-drawer-trigger:focus-visible,
+.filter-drawer-trigger.is-focused {
+  outline: 2px solid #a9b4ff;
+  outline-offset: 2px;
+  color: #fff;
+  background: rgba(88, 101, 242, 0.28);
 }
 
 .results-count {
@@ -524,6 +586,126 @@
   margin: 0;
   font-size: 0.9rem;
   color: rgba(255, 255, 255, 0.75);
+}
+
+/* ---- Start / quick menu ------------------------------------------------ */
+
+.quick-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: rgba(5, 6, 10, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.quick-menu {
+  width: min(100%, 32rem);
+  padding: 1.7rem;
+  text-align: left;
+  border: 1px solid rgba(169, 180, 255, 0.35);
+  border-radius: 20px;
+  background: rgba(20, 23, 34, 0.94);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.6);
+  animation: panel-slide-in 0.18s ease;
+}
+
+.quick-menu-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #a9b4ff;
+}
+
+.quick-menu-title {
+  margin: 0 0 1rem;
+  color: #fff;
+  font-size: 1.45rem;
+}
+
+.quick-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.quick-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.85rem 1rem;
+  text-align: left;
+  color: #fff;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.quick-menu-item:hover,
+.quick-menu-item.is-focused,
+.quick-menu-item:focus-visible {
+  outline: 2px solid #a9b4ff;
+  outline-offset: 2px;
+  background: rgba(88, 101, 242, 0.2);
+}
+
+.quick-menu-item-label {
+  font-weight: 700;
+}
+
+.quick-menu-item-description {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.quick-menu-hint {
+  margin: 1rem 0 0;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.filter-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 19;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: rgba(5, 6, 10, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.filter-drawer {
+  width: min(100%, 38rem);
+  max-height: min(90vh, 48rem);
+  padding: 1.7rem;
+  overflow-y: auto;
+  text-align: left;
+  border: 1px solid rgba(169, 180, 255, 0.35);
+  border-radius: 20px;
+  background: rgba(20, 23, 34, 0.94);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.6);
+  animation: panel-slide-in 0.18s ease;
+}
+
+.filter-drawer-query {
+  margin: -0.5rem 0 1rem;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.filter-drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
 }
 
 /* ---- Game details panel (issue #3) ---- */

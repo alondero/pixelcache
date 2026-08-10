@@ -6,6 +6,8 @@ interface UseTabListKeysResult {
   registerTabRef: (index: number) => (el: HTMLButtonElement | null) => void;
   /** Attach to the `role="tablist"` container's `onKeyDown`. */
   onKeyDown: (event: KeyboardEvent) => void;
+  /** Move selection and DOM focus from a controller shoulder/D-pad action. */
+  moveTab: (direction: "previous" | "next") => void;
 }
 
 /**
@@ -43,5 +45,19 @@ export function useTabListKeys(
     [count, selectedIndex, onSelect],
   );
 
-  return { registerTabRef, onKeyDown };
+  const moveTab = useCallback(
+    (direction: "previous" | "next") => {
+      const next = nextTabIndex(
+        selectedIndex,
+        direction === "previous" ? "ArrowLeft" : "ArrowRight",
+        count,
+      );
+      if (next === null) return;
+      onSelect(next);
+      tabRefs.current[next]?.focus();
+    },
+    [count, onSelect, selectedIndex],
+  );
+
+  return { registerTabRef, onKeyDown, moveTab };
 }
