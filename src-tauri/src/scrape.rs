@@ -388,7 +388,7 @@ pub async fn scrape_release_artwork(
     app: tauri::AppHandle,
     release_id: String,
 ) -> Result<ScrapeOutcome, String> {
-    let catalog = crate::catalog::load_current_catalog(&app)?;
+    let catalog = crate::catalog_store::load_current(&app).map_err(|error| error.to_string())?;
     let (status, found) =
         scrape_release(&catalog, &release_id, &HttpFetcher).map_err(|e| e.to_string())?;
     let slots: Vec<String> = found
@@ -399,7 +399,7 @@ pub async fn scrape_release_artwork(
         catalog
     } else {
         let updated = apply_artwork(catalog, &release_id, &found);
-        crate::catalog::persist_catalog(&app, &updated)?;
+        crate::catalog_store::save_current(&app, &updated).map_err(|error| error.to_string())?;
         updated
     };
     Ok(ScrapeOutcome {
