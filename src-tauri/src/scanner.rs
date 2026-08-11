@@ -38,9 +38,10 @@
 //!    stringifies the typed [`ScanError`] only at the IPC boundary.
 
 use crate::catalog::{Catalog, Vault};
-pub use crate::import_plan::{
-    default_emulator_for_platform, parse_filename, reconcile as apply_scan,
-    DiscoveredRelease as RomFile, ParsedName,
+#[cfg(test)]
+use crate::import_plan::{default_emulator_for_platform, ParsedName};
+use crate::import_plan::{
+    parse_filename, reconcile as apply_scan, title_prefix, DiscoveredRelease as RomFile,
 };
 use std::fmt;
 use std::path::Path;

@@ -365,6 +365,7 @@ mod tests {
         load_from_path as load_catalog_from_path, save_to_path as write_catalog_atomically,
         CatalogStoreError as CatalogError,
     };
+    use std::path::Path;
 
     fn sample_json() -> &'static str {
         r#"{

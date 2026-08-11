@@ -22,7 +22,7 @@
 
 use crate::catalog::Deck;
 #[cfg(test)]
-use crate::catalog::{Catalog, DeckKind, Release};
+use crate::catalog::{Catalog, DeckKind};
 #[cfg(test)]
 use crate::launch_plan::{
     default_plan as default_spec, resolve_test_plan as resolve_spec, LaunchPlanError,

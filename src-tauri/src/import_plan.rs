@@ -168,7 +168,7 @@ fn seed_decks(existing_decks: &[Deck], releases: &[Release]) -> Vec<Deck> {
     decks
 }
 
-fn title_prefix(stem: &str) -> String {
+pub(crate) fn title_prefix(stem: &str) -> String {
     let end = stem
         .char_indices()
         .find(|&(_, ch)| ch == '(' || ch == '[')
