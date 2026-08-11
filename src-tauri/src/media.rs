@@ -165,7 +165,7 @@ pub fn respond(
         return not_found();
     };
 
-    let Ok(catalog) = crate::catalog::load_current_catalog(app) else {
+    let Ok(catalog) = crate::catalog_store::load_current(app) else {
         return not_found();
     };
     let Some(rel_path) = resolved_slot(&catalog, &release_id, &slot) else {

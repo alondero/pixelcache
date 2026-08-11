@@ -1,5 +1,8 @@
 mod catalog;
+mod catalog_store;
+mod import_plan;
 mod launch;
+mod launch_plan;
 mod media;
 mod playhistory;
 mod scanner;

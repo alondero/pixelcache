@@ -4,13 +4,10 @@
 //! `docs/prd-mvp.md` ("Schema Definitions") and `CONTEXT.md` (domain glossary):
 //! a [`Catalog`] aggregates [`Game`], [`Release`], and [`Deck`] definitions.
 //!
-//! Parsing is split from file IO ([`Catalog::from_json`] vs [`load_catalog_from_path`])
-//! so the schema itself is unit-testable without touching the filesystem, matching
-//! the PRD's "Catalog Serialization Tests" testing decision.
+//! Durable filesystem policy lives behind the `catalog_store` seam, leaving this
+//! module focused on the domain schema and its mutations.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::path::Path;
 
 /// How a [`Release`] relates to the official original release of its [`Game`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,53 +260,6 @@ pub struct Catalog {
     pub vaults: Vec<Vault>,
 }
 
-/// Errors that can occur while loading a [`Catalog`] from disk.
-#[derive(Debug)]
-pub enum CatalogError {
-    /// The catalog file could not be read from disk.
-    Read {
-        path: String,
-        source: std::io::Error,
-    },
-    /// The catalog file's contents were not valid `catalog.json`.
-    Parse {
-        path: String,
-        source: serde_json::Error,
-    },
-    /// The catalog could not be persisted (create-dir, serialize, or atomic
-    /// rename failures).
-    Write {
-        path: String,
-        source: std::io::Error,
-    },
-}
-
-impl fmt::Display for CatalogError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CatalogError::Read { path, source } => {
-                write!(f, "failed to read catalog '{path}': {source}")
-            }
-            CatalogError::Parse { path, source } => {
-                write!(f, "failed to parse catalog '{path}': {source}")
-            }
-            CatalogError::Write { path, source } => {
-                write!(f, "failed to write catalog '{path}': {source}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CatalogError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CatalogError::Read { source, .. } => Some(source),
-            CatalogError::Parse { source, .. } => Some(source),
-            CatalogError::Write { source, .. } => Some(source),
-        }
-    }
-}
-
 impl Catalog {
     /// Parse a `Catalog` from a `catalog.json` document's contents.
     pub fn from_json(json: &str) -> Result<Catalog, serde_json::Error> {
@@ -317,108 +267,10 @@ impl Catalog {
     }
 }
 
-/// Read and parse the catalog at `path`, the only function in this module that
-/// touches the filesystem.
-pub fn load_catalog_from_path(path: &Path) -> Result<Catalog, CatalogError> {
-    let contents = std::fs::read_to_string(path).map_err(|source| CatalogError::Read {
-        path: path.display().to_string(),
-        source,
-    })?;
-    Catalog::from_json(&contents).map_err(|source| CatalogError::Parse {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
-/// Filename of the catalog document the Import Scanner and the settings
-/// commands write to the app data directory.
-pub const CATALOG_FILE_NAME: &str = "catalog.json";
-
-/// Load the catalog from the app data directory. When none exists yet — a
-/// fresh install before the first Vault scan — the catalog is simply *empty*,
-/// which is what the frontend keys its onboarding flow off. (The pre-onboarding
-/// builds shipped a bundled demo catalog here instead; nothing in it could
-/// actually launch, so the demo was replaced by guided setup.) Shared by the
-/// `load_catalog` command and the launch engine (which re-reads the catalog to
-/// resolve a Release into a Deck command), so both see the same catalog the
-/// user is actually viewing.
-pub fn load_current_catalog(app: &tauri::AppHandle) -> Result<Catalog, String> {
-    use tauri::Manager;
-
-    if let Ok(generated) = app.path().app_data_dir() {
-        let generated = generated.join(CATALOG_FILE_NAME);
-        if generated.is_file() {
-            return load_catalog_from_path(&generated).map_err(|e| e.to_string());
-        }
-    }
-    Ok(Catalog::default())
-}
-
 /// Tauri command invoked once on frontend startup to load the Catalog.
 #[tauri::command]
 pub async fn load_catalog(app: tauri::AppHandle) -> Result<Catalog, String> {
-    load_current_catalog(&app)
-}
-
-/// Atomically write a serialized JSON payload to `path`: create parent
-/// directories, write to a pid-tagged sibling temp file, then rename over the
-/// destination. Several Tauri commands persist to the same `catalog.json`
-/// (`save_decks`, `save_media`, `set_favorite`, plus the scanner writes
-/// through the same path) and can be invoked back-to-back from the UI; a
-/// non-atomic write leaves the file truncated or half-old if a concurrent
-/// writer wins the rename race, silently dropping the user's curated fields
-/// (developer, media, favorite) that the rescan-reconcile rule is supposed
-/// to preserve.
-///
-/// A pid-tagged sibling file is enough for the only concurrent-writer case
-/// this sees (this process's own threads — every catalog command ultimately
-/// funnels through here on the Tauri runtime); `rename` is atomic on POSIX
-/// and `MoveFileExW` with REPLACE_EXISTING is atomic on Windows, so two
-/// writers either both succeed at distinct snapshots or one loses cleanly.
-/// The temp file is best-effort cleaned up on a failed rename.
-///
-/// Two entry points: [`write_catalog_atomically`] (serialize + write) for
-/// callers whose only failure mode is IO, and [`write_catalog_string_atomic`]
-/// for callers (the scanner) that want to surface a typed serialize error.
-pub fn write_catalog_string_atomic(json: &str, path: &Path) -> Result<(), CatalogError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| CatalogError::Write {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
-    let temp = path.with_extension(format!("json.{}", std::process::id()));
-    std::fs::write(&temp, json).map_err(|source| CatalogError::Write {
-        path: temp.display().to_string(),
-        source,
-    })?;
-    if let Err(source) = std::fs::rename(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(CatalogError::Write {
-            path: path.display().to_string(),
-            source,
-        });
-    }
-    Ok(())
-}
-
-pub fn write_catalog_atomically(catalog: &Catalog, path: &Path) -> Result<(), CatalogError> {
-    let json = serde_json::to_string_pretty(catalog).map_err(|e| CatalogError::Write {
-        path: path.display().to_string(),
-        source: std::io::Error::other(format!("serialize: {e}")),
-    })?;
-    write_catalog_string_atomic(&json, path)
-}
-
-pub(crate) fn persist_catalog(app: &tauri::AppHandle, catalog: &Catalog) -> Result<(), String> {
-    use tauri::Manager;
-
-    let path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join(CATALOG_FILE_NAME);
-    write_catalog_atomically(catalog, &path).map_err(|e| e.to_string())
+    crate::catalog_store::load_current(&app).map_err(|error| error.to_string())
 }
 
 /// Tauri command backing the Decks settings screen: replace the catalog's Decks
@@ -427,9 +279,10 @@ pub(crate) fn persist_catalog(app: &tauri::AppHandle, catalog: &Catalog) -> Resu
 /// is preserved — only the Deck set changes.
 #[tauri::command]
 pub async fn save_decks(app: tauri::AppHandle, decks: Vec<Deck>) -> Result<Catalog, String> {
-    let mut catalog = load_current_catalog(&app)?;
+    let mut catalog =
+        crate::catalog_store::load_current(&app).map_err(|error| error.to_string())?;
     catalog.decks = decks;
-    persist_catalog(&app, &catalog)?;
+    crate::catalog_store::save_current(&app, &catalog).map_err(|error| error.to_string())?;
     Ok(catalog)
 }
 
@@ -453,9 +306,9 @@ pub async fn set_favorite(
     game_id: String,
     favorite: bool,
 ) -> Result<Catalog, String> {
-    let catalog = load_current_catalog(&app)?;
+    let catalog = crate::catalog_store::load_current(&app).map_err(|error| error.to_string())?;
     let updated = apply_favorite(catalog, &game_id, favorite);
-    persist_catalog(&app, &updated)?;
+    crate::catalog_store::save_current(&app, &updated).map_err(|error| error.to_string())?;
     Ok(updated)
 }
 
@@ -495,19 +348,24 @@ pub async fn save_media(
     game_id: Option<String>,
     game_media: Option<Media>,
 ) -> Result<Catalog, String> {
-    let catalog = load_current_catalog(&app)?;
+    let catalog = crate::catalog_store::load_current(&app).map_err(|error| error.to_string())?;
     let updated = apply_media(
         catalog,
         release_id.map(|id| (id, release_media)),
         game_id.map(|id| (id, game_media)),
     );
-    persist_catalog(&app, &updated)?;
+    crate::catalog_store::save_current(&app, &updated).map_err(|error| error.to_string())?;
     Ok(updated)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog_store::{
+        load_from_path as load_catalog_from_path, save_to_path as write_catalog_atomically,
+        CatalogStoreError as CatalogError,
+    };
+    use std::path::Path;
 
     fn sample_json() -> &'static str {
         r#"{
